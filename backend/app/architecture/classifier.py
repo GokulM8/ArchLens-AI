@@ -80,8 +80,14 @@ class ArchitectureClassifier:
             for role in ArchitecturalRole
         }
 
+        # Check if this is a trivial __init__.py file
+        is_trivial_init = self._is_trivial_init(module)
+
         # Collect evidence across 10 signals
-        self._evaluate_path_signal(module, accumulators)
+        # For trivial __init__.py, skip path-based classification as it leads to over-classification
+        if not is_trivial_init:
+            self._evaluate_path_signal(module, accumulators)
+
         self._evaluate_module_name_signal(module, accumulators)
         self._evaluate_imports_signal(module, accumulators)
         self._evaluate_imported_by_signal(module, accumulators)
@@ -131,8 +137,10 @@ class ArchitectureClassifier:
         if not name:
             name = module.path
 
-        # Placeholder for layer mapping (assigned in layers.py)
-        layer = ArchitecturalLayer.UNKNOWN
+        from app.architecture.layers import LayerMapper
+
+        # Map role to layer directly
+        layer = LayerMapper.get_layer_for_role(primary_role)
 
         return ArchitectureComponent(
             id=module.id,
@@ -144,6 +152,27 @@ class ArchitectureClassifier:
             evidence=primary_evidence,
             alternative_roles=alternative_roles,
         )
+
+    def _is_trivial_init(self, module: ModuleInfo) -> bool:
+        """Check if a module is a trivial __init__.py package initializer.
+
+        A trivial __init__.py typically:
+        - Has no classes
+        - Has no functions
+        - Has no routes/decorators
+        - Is a re-export of sub-modules
+        """
+        if not module.path.endswith("__init__.py"):
+            return False
+
+        # If the module has substantive evidence, it is not trivial
+        if len(module.classes) > 0 or len(module.functions) > 0:
+            return False
+
+        # If it has meaningful imports from key architectural sources, it might be substantive
+        # (e.g., collecting exports from services)
+        # But for now, a minimal __init__.py with no classes/functions is trivial
+        return True
 
     def _evaluate_path_signal(
         self,

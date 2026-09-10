@@ -17,6 +17,8 @@ import click
 from app.analyzer import RepositoryAnalyzer
 from app.graph.graph_builder import GraphBuilder
 from app.graph.serializer import GraphSerializer
+from app.architecture.engine import ArchitectureInferenceEngine
+from app.architecture.serializer import ArchitectureSerializer
 
 
 @click.group()
@@ -34,10 +36,10 @@ def cli():
     type=click.Path(dir_okay=True, file_okay=False),
     default="output",
     show_default=True,
-    help="Directory to write analysis.json and graph.json",
+    help="Directory to write analysis.json, graph.json, and architecture.json",
 )
 def analyze(path: str, output: str):
-    """Analyze a Python repository and produce analysis.json and graph.json.
+    """Analyze a Python repository and produce analysis.json, graph.json, and architecture.json.
 
     PATH is the repository root directory to analyze.
     """
@@ -56,22 +58,32 @@ def analyze(path: str, output: str):
     with open(analysis_path, "w", encoding="utf-8") as f:
         json.dump(result.model_dump(mode="json"), f, indent=2, sort_keys=False)
 
-    # Generate graph.json
+    # Generate graph.json (Phase 2)
     graph_path = output_dir / "graph.json"
     builder = GraphBuilder(result)
     graph = builder.build()
     GraphSerializer.save_to_file(graph, str(graph_path))
 
+    # Infer Architecture Intelligence (Phase 3)
+    architecture_path = output_dir / "architecture.json"
+    engine = ArchitectureInferenceEngine(analysis_result=result, graph=graph)
+    arch_result = engine.analyze()
+    ArchitectureSerializer.save_to_file(arch_result, str(architecture_path))
+
     click.echo(f"✅ Analyzed {path}")
-    click.echo(f"   Files:        {result.statistics.total_python_files}")
-    click.echo(f"   Lines:        {result.statistics.total_lines}")
-    click.echo(f"   Classes:      {result.statistics.total_classes}")
-    click.echo(f"   Functions:    {result.statistics.total_functions}")
-    click.echo(f"   Routes:       {result.statistics.total_routes}")
-    click.echo(f"   Imports:      {result.statistics.total_imports}")
-    click.echo(f"   Dependencies: {result.statistics.external_dependencies}")
-    click.echo(f"   Written to:   {analysis_path}")
-    click.echo(f"   Graph written to: {graph_path}")
+    click.echo(f"   Files:         {result.statistics.total_python_files}")
+    click.echo(f"   Lines:         {result.statistics.total_lines}")
+    click.echo(f"   Classes:       {result.statistics.total_classes}")
+    click.echo(f"   Functions:     {result.statistics.total_functions}")
+    click.echo(f"   Routes:        {result.statistics.total_routes}")
+    click.echo(f"   Imports:       {result.statistics.total_imports}")
+    click.echo(f"   Dependencies:  {result.statistics.external_dependencies}")
+    click.echo(f"   Components:    {arch_result.summary.component_count}")
+    click.echo(f"   Entry Points:  {arch_result.summary.entry_point_count}")
+    click.echo(f"   Patterns:      {arch_result.summary.pattern_count}")
+    click.echo(f"   Written to:    {analysis_path}")
+    click.echo(f"   Graph:         {graph_path}")
+    click.echo(f"   Architecture:  {architecture_path}")
 
 
 def main():
