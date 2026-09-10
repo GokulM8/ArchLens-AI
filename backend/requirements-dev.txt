@@ -1,0 +1,3 @@
+# Development dependencies for ArchLens AI
+pytest>=8.0
+pytest-cov>=4.1

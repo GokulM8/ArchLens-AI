@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""ArchLens AI command-line interface.
+
+Usage examples:
+    python -m archlens analyze ./example_project
+    python -m archlens analyze ./example_project --output ./output
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import click
+
+from app.analyzer import RepositoryAnalyzer
+from app.graph.graph_builder import GraphBuilder
+from app.graph.serializer import GraphSerializer
+
+
+@click.group()
+@click.version_option(version="0.1.0", prog_name="archlens")
+def cli():
+    """ArchLens AI — analyze codebases and reconstruct their architecture."""
+    pass
+
+
+@cli.command()
+@click.argument("path", type=click.Path(exists=True, file_okay=False, dir_okay=True))
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(dir_okay=True, file_okay=False),
+    default="output",
+    show_default=True,
+    help="Directory to write analysis.json and graph.json",
+)
+def analyze(path: str, output: str):
+    """Analyze a Python repository and produce analysis.json and graph.json.
+
+    PATH is the repository root directory to analyze.
+    """
+    output_dir = Path(output)
+
+    try:
+        analyzer = RepositoryAnalyzer(path)
+        result = analyzer.analyze()
+    except (FileNotFoundError, NotADirectoryError) as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    analysis_path = output_dir / "analysis.json"
+
+    with open(analysis_path, "w", encoding="utf-8") as f:
+        json.dump(result.model_dump(mode="json"), f, indent=2, sort_keys=False)
+
+    # Generate graph.json
+    graph_path = output_dir / "graph.json"
+    builder = GraphBuilder(result)
+    graph = builder.build()
+    GraphSerializer.save_to_file(graph, str(graph_path))
+
+    click.echo(f"✅ Analyzed {path}")
+    click.echo(f"   Files:        {result.statistics.total_python_files}")
+    click.echo(f"   Lines:        {result.statistics.total_lines}")
+    click.echo(f"   Classes:      {result.statistics.total_classes}")
+    click.echo(f"   Functions:    {result.statistics.total_functions}")
+    click.echo(f"   Routes:       {result.statistics.total_routes}")
+    click.echo(f"   Imports:      {result.statistics.total_imports}")
+    click.echo(f"   Dependencies: {result.statistics.external_dependencies}")
+    click.echo(f"   Written to:   {analysis_path}")
+    click.echo(f"   Graph written to: {graph_path}")
+
+
+def main():
+    """Entry point for python -m archlens."""
+    cli()
+
+
+if __name__ == "__main__":
+    main()

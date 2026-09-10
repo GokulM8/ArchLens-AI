@@ -1,0 +1,1 @@
+"""FastAPI example application for ArchLens AI testing."""
