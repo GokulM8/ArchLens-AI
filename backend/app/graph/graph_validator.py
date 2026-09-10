@@ -229,9 +229,7 @@ class GraphValidator:
         for node_id in self.graph.nodes():
             if self.graph.has_edge(node_id, node_id):
                 # Get all edge data for self-loops
-                self_loop_data = [
-                    d for _k, d in self.graph.get_edge_data(node_id, node_id).values()
-                ]
+                self_loop_data = list(self.graph.get_edge_data(node_id, node_id).values())
 
                 # Self-loops are generally not valid in code graphs
                 result.add_error(f"Node {node_id} has self-loop(s): {self_loop_data}")

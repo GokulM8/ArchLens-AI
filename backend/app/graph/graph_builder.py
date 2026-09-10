@@ -7,20 +7,11 @@ representing code structure and relationships for further analysis.
 from __future__ import annotations
 
 import networkx as nx
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, Tuple
 
 from app.models.schemas import (
     AnalysisResult,
-    ClassInfo,
-    ExternalDependency,
-    FileInfo,
-    FunctionInfo,
-    ImportInfo,
     ImportType,
-    ModuleInfo,
-    Relationship,
-    RelationshipType,
-    RouteInfo,
 )
 
 
@@ -35,8 +26,7 @@ class GraphBuilder:
         """
         self.analysis_result = analysis_result
         self.graph = nx.MultiDiGraph()
-        self._node_cache: Dict[str, str] = {}  # Maps entity IDs to node labels
-        self._reverse_cache: Dict[str, str] = {}  # Maps node labels to entity IDs
+        self._added_containment: Set[Tuple[str, str]] = set()  # Track added containment edges
 
     def build(self) -> nx.MultiDiGraph:
         """Build the complete graph from analysis results.
@@ -71,8 +61,6 @@ class GraphBuilder:
             label=label,
             path=self.analysis_result.repository.root_path,
         )
-        self._node_cache[repo_id] = repo_id
-        self._reverse_cache[repo_id] = repo_id
 
     def _add_directory_nodes(self) -> None:
         """Add nodes for directories containing Python files."""
@@ -97,8 +85,6 @@ class GraphBuilder:
                 label=label,
                 path=dir_path,
             )
-            self._node_cache[node_id] = node_id
-            self._reverse_cache[node_id] = node_id
 
     def _add_file_nodes(self) -> None:
         """Add nodes for each Python file."""
@@ -115,8 +101,6 @@ class GraphBuilder:
                 package=file_info.package,
                 is_init=file_info.is_init,
             )
-            self._node_cache[node_id] = node_id
-            self._reverse_cache[node_id] = node_id
 
     def _add_module_nodes(self) -> None:
         """Add nodes for each Python module."""
@@ -129,8 +113,6 @@ class GraphBuilder:
                 path=module_info.path,
                 package=module_info.package,
             )
-            self._node_cache[node_id] = node_id
-            self._reverse_cache[node_id] = node_id
 
     def _add_class_nodes(self) -> None:
         """Add nodes for each class."""
@@ -147,8 +129,6 @@ class GraphBuilder:
                 is_dataclass=class_info.is_dataclass,
                 is_pydantic_model=class_info.is_pydantic_model,
             )
-            self._node_cache[node_id] = node_id
-            self._reverse_cache[node_id] = node_id
 
     def _add_function_nodes(self) -> None:
         """Add nodes for each function/method."""
@@ -166,8 +146,6 @@ class GraphBuilder:
                 is_dunder=func_info.is_dunder,
                 class_id=func_info.class_id,
             )
-            self._node_cache[node_id] = node_id
-            self._reverse_cache[node_id] = node_id
 
     def _add_route_nodes(self) -> None:
         """Add nodes for each API route."""
@@ -187,8 +165,6 @@ class GraphBuilder:
                 framework=route_info.framework.value,
                 router_name=route_info.router_name,
             )
-            self._node_cache[node_id] = node_id
-            self._reverse_cache[node_id] = node_id
 
     def _add_dependency_nodes(self) -> None:
         """Add nodes for each external dependency."""
@@ -204,8 +180,6 @@ class GraphBuilder:
                 source_file=dep.source_file,
                 category=dep.category,
             )
-            self._node_cache[node_id] = node_id
-            self._reverse_cache[node_id] = node_id
 
     def _add_containment_edges(self) -> None:
         """Add CONTAINS edges for hierarchical relationships."""
@@ -261,36 +235,45 @@ class GraphBuilder:
                 continue
 
             for import_info in module_info.imports:
-                # Determine target module ID
-                target_module_id = self._resolve_import_target(
-                    import_info.module,
-                    import_info.is_from_import,
-                    source_module_id
-                )
+                targets: Set[str] = set()
 
-                if target_module_id and self.graph.has_node(target_module_id):
-                    self.graph.add_edge(
+                # If it's a "from pkg import submodule" import, resolve each imported name
+                if import_info.is_from_import and import_info.names:
+                    for name in import_info.names:
+                        submodule_id = f"module:{import_info.module}.{name}"
+                        if self.graph.has_node(submodule_id):
+                            targets.add(submodule_id)
+
+                if not targets:
+                    target = self._resolve_import_target(
+                        import_info.module,
                         source_module_id,
-                        target_module_id,
-                        type="IMPORTS",
-                        import_type=import_info.import_type.value,
-                        is_from_import=import_info.is_from_import,
-                        names=import_info.names,
-                        alias=import_info.alias,
-                        line=import_info.line,
                     )
+                    if target:
+                        targets.add(target)
+
+                for target_module_id in targets:
+                    if target_module_id and target_module_id != source_module_id and self.graph.has_node(target_module_id):
+                        self.graph.add_edge(
+                            source_module_id,
+                            target_module_id,
+                            type="IMPORTS",
+                            import_type=import_info.import_type.value,
+                            is_from_import=import_info.is_from_import,
+                            names=import_info.names,
+                            alias=import_info.alias,
+                            line=import_info.line,
+                        )
 
     def _resolve_import_target(
         self,
         imported_module: str,
-        is_from_import: bool,
-        source_module_id: str
+        source_module_id: str,
     ) -> Optional[str]:
         """Resolve an import to a target module ID.
 
         Args:
             imported_module: The imported module string (e.g., "os", "app.utils.helpers")
-            is_from_import: Whether this is a "from" import
             source_module_id: The ID of the source module
 
         Returns:
