@@ -19,6 +19,10 @@ from app.graph.graph_builder import GraphBuilder
 from app.graph.serializer import GraphSerializer
 from app.architecture.engine import ArchitectureInferenceEngine
 from app.architecture.serializer import ArchitectureSerializer
+from app.health.engine import HealthInferenceEngine
+from app.health.serializer import HealthSerializer
+from app.evolution.engine import EvolutionInferenceEngine
+from app.evolution.serializer import EvolutionSerializer
 
 
 @click.group()
@@ -70,6 +74,20 @@ def analyze(path: str, output: str):
     arch_result = engine.analyze()
     ArchitectureSerializer.save_to_file(arch_result, str(architecture_path))
 
+    # Infer Architecture Health & Risk Intelligence (Phase 4)
+    health_path = output_dir / "health.json"
+    health_engine = HealthInferenceEngine(analysis_result=result, graph=graph, architecture_result=arch_result)
+    health_result = health_engine.analyze()
+    HealthSerializer.save_to_file(health_result, str(health_path))
+
+    # Infer Architecture Evolution & Refactoring Intelligence (Phase 5)
+    evolution_path = output_dir / "evolution.json"
+    evolution_engine = EvolutionInferenceEngine(
+        analysis=result, graph=graph, architecture=arch_result, health=health_result
+    )
+    evolution_result = evolution_engine.analyze()
+    EvolutionSerializer.save_to_file(evolution_result, str(evolution_path))
+
     click.echo(f"✅ Analyzed {path}")
     click.echo(f"   Files:         {result.statistics.total_python_files}")
     click.echo(f"   Lines:         {result.statistics.total_lines}")
@@ -78,12 +96,26 @@ def analyze(path: str, output: str):
     click.echo(f"   Routes:        {result.statistics.total_routes}")
     click.echo(f"   Imports:       {result.statistics.total_imports}")
     click.echo(f"   Dependencies:  {result.statistics.external_dependencies}")
+    click.echo(f"")
     click.echo(f"   Components:    {arch_result.summary.component_count}")
     click.echo(f"   Entry Points:  {arch_result.summary.entry_point_count}")
     click.echo(f"   Patterns:      {arch_result.summary.pattern_count}")
+    click.echo(f"")
+    click.echo(f"   Health Score:  {health_result.overall_health.score}")
+    click.echo(f"   Health Rating: {health_result.overall_health.rating.value}")
+    click.echo(f"")
+    click.echo(f"   Risks:         {sum(health_result.risk_summary.values())}")
+    click.echo(f"   Hotspots:      {len(health_result.hotspots)}")
+    click.echo(f"")
+    click.echo(f"   Refactoring:   {evolution_result.summary.refactoring_opportunities}")
+    click.echo(f"   Critical:      {evolution_result.priorities.critical_count}")
+    click.echo(f"   High:          {evolution_result.priorities.high_count}")
+    click.echo(f"")
     click.echo(f"   Written to:    {analysis_path}")
     click.echo(f"   Graph:         {graph_path}")
     click.echo(f"   Architecture:  {architecture_path}")
+    click.echo(f"   Health:        {health_path}")
+    click.echo(f"   Evolution:     {evolution_path}")
 
 
 def main():
