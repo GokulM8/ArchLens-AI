@@ -2,10 +2,12 @@
 
 import pytest
 import os
+import httpx
 from unittest.mock import patch, AsyncMock, MagicMock
 from app.llm.factory import LLMProviderFactory
 from app.llm.provider import LLMRequest, LLMResponse
 from app.llm.providers.mock_provider import MockLLMProvider
+from app.llm.providers.openai_provider import OpenAIProvider
 
 
 class TestLLMProviderFactory:
@@ -269,3 +271,203 @@ class TestConfigurationEnvironmentVariables:
             assert config["model"] == "gpt-4o"
             assert config["base_url"] == "https://api.openai.com/v1"
             assert config["timeout"] == 30
+
+
+def _make_mock_response(status_code: int, body: dict | None = None, text: str = ""):
+    """Create a fake httpx-like response object for provider tests."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.text = text
+    if body is not None:
+        resp.json = lambda: body
+    return resp
+
+
+def _make_mock_client(responses):
+    """
+    Build an AsyncMock for ``httpx.AsyncClient`` that yields a mock whose
+    ``.post`` returns *responses* in order.
+    """
+    client = AsyncMock()
+    client.post = AsyncMock(side_effect=responses)
+    client.__aenter__.return_value = client
+    client.__aexit__ = AsyncMock(return_value=False)
+    return client
+
+
+# ---------------------------------------------------------------------------
+# Tests for retry / transient-failure handling (spec §8)
+# ---------------------------------------------------------------------------
+
+class TestOpenAIRetryBehaviour:
+    """Verify that the OpenAI provider retries transient failures."""
+
+    @pytest.mark.asyncio
+    async def test_retries_on_500_then_succeeds(self):
+        """A 500 response followed by a 200 should retry and succeed."""
+        success = _make_mock_response(
+            200, {"choices": [{"message": {"content": "ok"}}], "usage": {"total": 5}}
+        )
+        transient = _make_mock_response(500, text="Internal Server Error")
+        mock_client = _make_mock_client([transient, success])
+
+        provider = OpenAIProvider(
+            {"api_key": "k", "model": "m", "max_retries": 3, "retry_delay_ms": 0}
+        )
+        with patch(
+            "app.llm.providers.openai_provider.httpx.AsyncClient",
+            return_value=mock_client,
+        ):
+            resp = await provider.generate(
+                LLMRequest(system_prompt="s", user_prompt="u", context={})
+            )
+
+        assert resp.success is True
+        assert resp.content == "ok"
+        assert mock_client.post.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retries_on_429_then_succeeds(self):
+        """HTTP 429 (rate limit) should be retried."""
+        success = _make_mock_response(
+            200, {"choices": [{"message": {"content": "rate_ok"}}], "usage": {}}
+        )
+        rate_limited = _make_mock_response(429, text="Rate limited")
+        mock_client = _make_mock_client([rate_limited, success])
+
+        provider = OpenAIProvider(
+            {"api_key": "k", "model": "m", "max_retries": 3, "retry_delay_ms": 0}
+        )
+        with patch(
+            "app.llm.providers.openai_provider.httpx.AsyncClient",
+            return_value=mock_client,
+        ):
+            resp = await provider.generate(
+                LLMRequest(system_prompt="s", user_prompt="u", context={})
+            )
+
+        assert resp.success is True
+        assert mock_client.post.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retries_on_timeout_then_succeeds(self):
+        """A network timeout should be retried, followed by a successful call."""
+        success = _make_mock_response(
+            200, {"choices": [{"message": {"content": "after_timeout"}}], "usage": {}}
+        )
+        mock_client = _make_mock_client([success])
+        mock_client.post = AsyncMock(
+            side_effect=[httpx.TimeoutException("timed out"), success]
+        )
+
+        provider = OpenAIProvider(
+            {"api_key": "k", "model": "m", "max_retries": 3, "retry_delay_ms": 0}
+        )
+        with patch(
+            "app.llm.providers.openai_provider.httpx.AsyncClient",
+            return_value=mock_client,
+        ):
+            resp = await provider.generate(
+                LLMRequest(system_prompt="s", user_prompt="u", context={})
+            )
+
+        assert resp.success is True
+        assert mock_client.post.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_no_retry_on_401(self):
+        """HTTP 401 (auth failure) should not be retried."""
+        error = _make_mock_response(401, text="Invalid API key")
+        mock_client = _make_mock_client([error])
+
+        provider = OpenAIProvider(
+            {"api_key": "k", "model": "m", "max_retries": 3, "retry_delay_ms": 0}
+        )
+        with patch(
+            "app.llm.providers.openai_provider.httpx.AsyncClient",
+            return_value=mock_client,
+        ):
+            resp = await provider.generate(
+                LLMRequest(system_prompt="s", user_prompt="u", context={})
+            )
+
+        assert resp.success is False
+        assert resp.error is not None and "401" in resp.error
+        assert mock_client.post.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_no_retry_on_400(self):
+        """HTTP 400 (bad request) should not be retried."""
+        error = _make_mock_response(400, text="Bad request")
+        mock_client = _make_mock_client([error])
+
+        provider = OpenAIProvider(
+            {"api_key": "k", "model": "m", "max_retries": 3, "retry_delay_ms": 0}
+        )
+        with patch(
+            "app.llm.providers.openai_provider.httpx.AsyncClient",
+            return_value=mock_client,
+        ):
+            resp = await provider.generate(
+                LLMRequest(system_prompt="s", user_prompt="u", context={})
+            )
+
+        assert resp.success is False
+        assert mock_client.post.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_retries_exhausted_returns_error(self):
+        """Persistent 500 errors after max_retries should fail with error."""
+        error = _make_mock_response(500, text="always broken")
+        mock_client = _make_mock_client([error, error, error])  # 1 original + 2 retries
+
+        provider = OpenAIProvider(
+            {"api_key": "k", "model": "m", "max_retries": 2, "retry_delay_ms": 0}
+        )
+        with patch(
+            "app.llm.providers.openai_provider.httpx.AsyncClient",
+            return_value=mock_client,
+        ):
+            resp = await provider.generate(
+                LLMRequest(system_prompt="s", user_prompt="u", context={})
+            )
+
+        assert resp.success is False
+        assert mock_client.post.await_count == 3  # initial + 2 retries
+
+    @pytest.mark.asyncio
+    async def test_max_retries_zero_single_attempt(self):
+        """With max_retries=0 there should be exactly one call."""
+        error = _make_mock_response(503, text="Unavailable")
+        mock_client = _make_mock_client([error])
+
+        provider = OpenAIProvider(
+            {"api_key": "k", "model": "m", "max_retries": 0, "retry_delay_ms": 0}
+        )
+        with patch(
+            "app.llm.providers.openai_provider.httpx.AsyncClient",
+            return_value=mock_client,
+        ):
+            resp = await provider.generate(
+                LLMRequest(system_prompt="s", user_prompt="u", context={})
+            )
+
+        assert resp.success is False
+        assert mock_client.post.await_count == 1
+
+    def test_default_retry_config(self):
+        """Default configuration should use max_retries=3 and retry_delay_ms=100."""
+        provider = OpenAIProvider({"api_key": "k", "model": "m"})
+        assert provider.config.get("max_retries", 3) == 3
+        assert provider.config.get("retry_delay_ms", 100) == 100
+
+    def test_is_retryable_status_static_method(self):
+        """_is_retryable_status should classify codes correctly."""
+        assert OpenAIProvider._is_retryable_status(500) is True
+        assert OpenAIProvider._is_retryable_status(503) is True
+        assert OpenAIProvider._is_retryable_status(429) is True
+        assert OpenAIProvider._is_retryable_status(200) is False
+        assert OpenAIProvider._is_retryable_status(400) is False
+        assert OpenAIProvider._is_retryable_status(401) is False
+        assert OpenAIProvider._is_retryable_status(403) is False
+        assert OpenAIProvider._is_retryable_status(404) is False

@@ -1,5 +1,6 @@
 """OpenAI LLM Provider implementation."""
 
+import asyncio
 import time
 from typing import Optional, Dict, Any
 import httpx
@@ -86,9 +87,18 @@ class OpenAIProvider(LLMProvider):
                 error=error_msg,
             )
 
+    @staticmethod
+    def _is_retryable_status(status_code: int) -> bool:
+        """Return True for HTTP status codes indicating transient failures."""
+        return status_code == 429 or 500 <= status_code < 600
+
     async def _call_openai_api(self, request: LLMRequest) -> Dict[str, Any]:
         """
-        Call OpenAI API.
+        Call OpenAI API with retry handling for transient failures.
+
+        Retries timeouts, connection errors, HTTP 429 (rate limit), and 5xx
+        server errors up to ``max_retries`` times with linear back-off.
+        Non-transient client errors (4xx except 429) fail immediately.
 
         Args:
             request: LLMRequest
@@ -101,7 +111,7 @@ class OpenAIProvider(LLMProvider):
             {"role": "user", "content": request.user_prompt},
         ]
 
-        payload = {
+        payload: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "temperature": request.temperature,
@@ -115,19 +125,40 @@ class OpenAIProvider(LLMProvider):
             "Content-Type": "application/json",
         }
 
+        max_retries: int = max(0, int(self.config.get("max_retries", 3)))
+        retry_delay_ms: int = max(0, int(self.config.get("retry_delay_ms", 100)))
+
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                f"{self.base_url}/chat/completions",
-                json=payload,
-                headers=headers,
-            )
+            for attempt in range(max_retries + 1):
+                try:
+                    response = await client.post(
+                        f"{self.base_url}/chat/completions",
+                        json=payload,
+                        headers=headers,
+                    )
+                except httpx.TransportError:
+                    # Network / timeout / connection errors are transient — retry.
+                    if attempt < max_retries:
+                        await asyncio.sleep(retry_delay_ms * (attempt + 1) / 1000)
+                        continue
+                    raise
 
-            if response.status_code != 200:
-                raise Exception(f"OpenAI API error: {response.status_code} - {response.text}")
+                if response.status_code == 200:
+                    data = response.json()
+                    return {
+                        "content": data.get("choices", [{}])[0]
+                        .get("message", {})
+                        .get("content", ""),
+                        "usage": data.get("usage", {}),
+                    }
 
-            data = response.json()
+                if self._is_retryable_status(response.status_code) and attempt < max_retries:
+                    await asyncio.sleep(retry_delay_ms * (attempt + 1) / 1000)
+                    continue
 
-            return {
-                "content": data.get("choices", [{}])[0].get("message", {}).get("content", ""),
-                "usage": data.get("usage", {}),
-            }
+                raise Exception(
+                    f"OpenAI API error: {response.status_code} - {response.text}"
+                )
+
+            # Unreachable: the for-loop always returns, continues, or raises.
+            raise RuntimeError("_call_openai_api: unexpected loop exit")  # pragma: no cover
