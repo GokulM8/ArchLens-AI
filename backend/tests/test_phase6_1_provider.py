@@ -257,7 +257,7 @@ class TestConfigurationEnvironmentVariables:
             assert config["timeout"] == 60
 
     def test_default_values_when_env_vars_missing(self):
-        """Should use default values when environment variables are missing."""
+        """Should use defaults (never a hard-coded model) when env vars are missing."""
         with patch.dict(
             os.environ,
             {
@@ -268,7 +268,10 @@ class TestConfigurationEnvironmentVariables:
         ):
             config = LLMProviderFactory._build_openai_config()
 
-            assert config["model"] == "gpt-4o"
+            # The model is never defaulted to a hard-coded name like "gpt-4o" —
+            # it must come from ARCHLENS_LLM_MODEL. An empty model is validated
+            # downstream by the provider.
+            assert config["model"] == ""
             assert config["base_url"] == "https://api.openai.com/v1"
             assert config["timeout"] == 30
 

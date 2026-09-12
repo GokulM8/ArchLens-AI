@@ -155,6 +155,8 @@ class LLMContext(BaseModel):
     analysis_data: Optional[Dict[str, Any]] = None
     graph_data: Optional[Dict[str, Any]] = None
     architecture_data: Optional[Dict[str, Any]] = None
+    health_data: Optional[Dict[str, Any]] = None
+    evolution_data: Optional[Dict[str, Any]] = None
     user_focus: Optional[str] = None  # Component or aspect to focus on
     custom_context: Dict[str, Any] = Field(default_factory=dict)
 

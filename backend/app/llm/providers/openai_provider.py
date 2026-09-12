@@ -20,7 +20,10 @@ class OpenAIProvider(LLMProvider):
         super().__init__(config)
         self.provider_name = "openai"
         self.api_key = config.get("api_key")
-        self.model = config.get("model", "gpt-4o")
+        # Model is never hard-coded — it must come from the environment
+        # (ARCHLENS_LLM_MODEL). _validate() rejects an empty model with a
+        # clear configuration error.
+        self.model = config.get("model", "")
         self.base_url = config.get("base_url", "https://api.openai.com/v1")
         self.timeout = config.get("timeout", 30)
         self._validate()

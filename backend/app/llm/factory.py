@@ -38,7 +38,10 @@ class LLMProviderFactory:
         """Build OpenAI provider configuration from environment variables."""
         return {
             "api_key": os.getenv("ARCHLENS_LLM_API_KEY"),
-            "model": os.getenv("ARCHLENS_LLM_MODEL", "gpt-4o"),
+            # Model is never hard-coded — it is taken solely from the env var
+            # (ARCHLENS_LLM_MODEL). The OpenAIProvider validates that a model is
+            # present for a configured provider.
+            "model": os.getenv("ARCHLENS_LLM_MODEL", ""),
             "base_url": os.getenv("ARCHLENS_LLM_BASE_URL", "https://api.openai.com/v1"),
             "timeout": int(os.getenv("ARCHLENS_LLM_TIMEOUT", "30")),
         }
