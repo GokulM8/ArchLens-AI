@@ -130,8 +130,39 @@ class LLMService:
                 ],
             )
 
-        # Get the provider
-        provider = self.provider_factory.create_provider()
+        # Get the provider. Provider constructors validate configuration and
+        # may raise ValueError for incomplete or unsupported settings.
+        try:
+            provider = self.provider_factory.create_provider()
+        except ValueError as error:
+            return LLMOperationResponse(
+                operation_type=LLMOperationType.ASK,
+                category=LLMOperationCategory.ARCHITECTURE_UNDERSTANDING,
+                success=False,
+                content=f"Unable to configure LLM provider: {error}",
+                grounding_evidence=[],
+                metadata=LLMResponseMetadata(
+                    provider="none",
+                    model="none",
+                    usage=LLMUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+                    latency_ms=0.0,
+                    request_id=request.get("request_id"),
+                    grounding_sources=[],
+                    raw_response={},
+                ),
+                error=LLMError(
+                    error_type="configuration_error",
+                    message=str(error),
+                    details={"provider": "invalid_configuration"},
+                    retriable=False,
+                ),
+                explanation=str(error),
+                suggestions=[
+                    "Check ARCHLENS_LLM_PROVIDER configuration",
+                    "Verify ARCHLENS_LLM_API_KEY is set correctly",
+                    "Set ARCHLENS_LLM_MODEL when required by the provider",
+                ],
+            )
         if not provider:
             return LLMOperationResponse(
                 operation_type=LLMOperationType.ASK,

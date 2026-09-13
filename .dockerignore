@@ -1,0 +1,203 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+.venv/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._DS_Store
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
+
+# Jupyter Notebook v4
+*.travelling?.ipynb
+
+# PyBuilder
+target/
+
+# virtual environment (these are project-specific but common)
+*/env/
+*/.venv/
+*/venv/
+
+# Other
+*.log
+tmp/
+tmp_*
+
+# Archive files
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+*.zip
+*.7z
+*.rar
+*.bz2
+*.db
+
+# Temporary files
+*.temp
+*.tmp
+*.swp
+*.swo
+
+# project-specific
+output/
+*.json
+*.log
+*.stats
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info
+*.eggs
+*.dll
+*.exe
+*.bin
+*.dat
+*.db
+*.mdb
+*.sqlite
+*.sqlite3
+
+# IDE and Editor settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+.DS_Store?
+._DS_Store
+
+# Virtual Environments
+*.env
+*.venv
+env/
+venv/
+
+# Test coverage
+.coverage
+htmlcov/
+
+# Distribution / packaging
+*.egg-info/
+*.eggs/
+*.whl
+
+# IDE files
+*.swp
+*.swo
+*~
+
+# Data
+*.csv
+*.json
+*.xml
+*.yaml
+*.yml
+
+# Build artifacts
+build/
+dist/
+
+# Local
+*.local
+
+# Temporary files
+tmp/
+tmp_*
+
+# Log files
+*.log
+*.logs
+
+# Cache files
+*.cache
+*.pyc
+__pycache__/
+
+# Configuration files (these might be mounted from host)
+!.dockerignore
+!.gitignore
+!.env.example
+!.env
+
+# READMEs and docs
+README.md
+README.rst
+README.txt
+
+# Documentation
+*.rst
+*.md
+
+# Local
+*local*
+
+# Local config files
+*.conf
+*.config
+*.ini
+*.json
+*.yml
+*.yaml
+*.env
+
+# Test output
+*/test-results/
+*/reports/
+*/coverage/
+
+# Files that might contain secrets
+*.key
+*.pem
+*.p12
+*.crt

@@ -18,6 +18,13 @@ from functools import lru_cache
 from typing import Any, Dict, Optional
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Load the local .env file (git-ignored) so ARCHLENS_LLM_* / ARCHLENS_ARTIFACTS_DIR
+# are picked up for local development. Environment variables already set in the
+# shell take precedence (override is disabled by default in python-dotenv).
+load_dotenv()
+
 from fastapi import FastAPI, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -76,7 +83,11 @@ def _build_llm_service(artifacts_dir: Path) -> LLMService:
             status_code=404,
             detail=f"Artifacts directory not found: {artifacts_dir}. Run `archlens analyze` first.",
         )
-    context_builder = VerifiedContextBuilder.from_artifacts_dir(artifacts_dir)
+    try:
+        context_builder = VerifiedContextBuilder.from_artifacts_dir(artifacts_dir)
+    except FileNotFoundError as e:
+        # Directory exists but an expected artifact JSON is missing.
+        raise HTTPException(status_code=404, detail=str(e))
     guardrails = GroundingGuardrails(context_builder)
     return LLMService(LLMProviderFactory, context_builder, guardrails)
 

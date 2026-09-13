@@ -14,6 +14,12 @@ import sys
 from pathlib import Path
 
 import click
+from dotenv import load_dotenv
+
+# Load the local .env file (git-ignored) so ARCHLENS_LLM_* configuration is
+# picked up for local development. Shell-exported environment variables take
+# precedence (python-dotenv does not override by default).
+load_dotenv()
 
 from app.analyzer import RepositoryAnalyzer
 from app.graph.graph_builder import GraphBuilder

@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 
 # Directories to always skip
@@ -54,6 +54,23 @@ CONFIG_FILES: frozenset[str] = frozenset({
 
 # Default max file size: 1MB
 DEFAULT_MAX_FILE_SIZE_BYTES = 1024 * 1024
+
+
+# Environment overrides so the documented ARCHLENS_* knobs actually work.
+# ARCHLENS_MAX_FILE_SIZE_KB sets the per-file cap (Kerberos bytes are 1024*KB).
+_env_max_kb = os.getenv("ARCHLENS_MAX_FILE_SIZE_KB")
+if _env_max_kb:
+    try:
+        DEFAULT_MAX_FILE_SIZE_BYTES = int(_env_max_kb) * 1024
+    except ValueError:
+        # Invalid value → keep the safe built-in default.
+        pass
+
+_env_excludes = os.getenv("ARCHLENS_EXCLUDE_PATTERNS")
+if _env_excludes:
+    extra = {p.strip() for p in _env_excludes.split(",") if p.strip()}
+    if extra:
+        DEFAULT_EXCLUDE_DIRS = frozenset(DEFAULT_EXCLUDE_DIRS) | frozenset(extra)
 
 
 @dataclass
@@ -106,6 +123,8 @@ class RepositoryScanner:
         exclude_dirs: Optional[set[str]] = None,
         max_file_size_bytes: int = DEFAULT_MAX_FILE_SIZE_BYTES,
         extra_exclude_patterns: Optional[set[str]] = None,
+        verbose: bool = False,
+        progress_callback: Optional[Callable] = None,
     ):
         self.exclude_dirs = set(DEFAULT_EXCLUDE_DIRS)
         if exclude_dirs:
@@ -113,6 +132,8 @@ class RepositoryScanner:
         if extra_exclude_patterns:
             self.exclude_dirs.update(extra_exclude_patterns)
         self.max_file_size_bytes = max_file_size_bytes
+        self.verbose = verbose
+        self.progress_callback = progress_callback
 
     def scan(self, root_path: str | Path) -> ScanResult:
         """Scan a directory and return categorized file listings.
@@ -139,7 +160,27 @@ class RepositoryScanner:
             name=root.name,
         )
 
+        if self.verbose:
+            print(f"🔍 Scanning repository: {root}")
+            print(f"📁 Root directory: {root.name}")
+            print(f"📊 Max file size: {self.max_file_size_bytes / (1024*1024):.1f} MB")
+            print(f"⚡ Verbose mode: {'enabled' if self.verbose else 'disabled'}")
+
         self._walk(root, root, result)
+
+        if self.verbose:
+            print(f"\n✅ Scan complete: {result.total_files} total files")
+            print(f"   Python files: {result.total_python_files}")
+            print(f"   Config files: {len(result.config_files)}")
+            print(f"   Other files: {len(result.other_files)}")
+            print(f"   Skipped dirs: {len(result.skipped_dirs)}")
+            print(f"   Skipped files: {len(result.skipped_files)}")
+            print(f"   Errors: {len(result.errors)}")
+            if result.errors:
+                print("   Error details:")
+                for error in result.errors:
+                    print(f"     - {error}")
+
         return result
 
     def _walk(self, current: Path, root: Path, result: ScanResult) -> None:
@@ -148,12 +189,19 @@ class RepositoryScanner:
             entries = sorted(current.iterdir(), key=lambda e: e.name)
         except PermissionError:
             result.errors.append(f"Permission denied: {current}")
+            if self.verbose:
+                print(f"⚠️  Permission denied: {current}")
             return
+
+        if self.verbose:
+            print(f"📂 Exploring: {current.relative_to(root)}")
 
         for entry in entries:
             if entry.is_dir():
                 if self._should_exclude_dir(entry.name):
                     result.skipped_dirs.append(str(entry.relative_to(root)))
+                    if self.verbose:
+                        print(f"⏭️  Skipping directory: {entry.name}")
                     continue
                 self._walk(entry, root, result)
 
@@ -168,6 +216,16 @@ class RepositoryScanner:
                     result.config_files.append(scanned)
                 else:
                     result.other_files.append(scanned)
+
+            # Progress callback every 100 files for large directories
+            if self.progress_callback and len(result.python_files) % 100 == 0:
+                self.progress_callback({
+                    'files_found': len(result.python_files) + len(result.config_files) + len(result.other_files),
+                    'current_path': str(current.relative_to(root)),
+                    'python_files': len(result.python_files),
+                    'config_files': len(result.config_files),
+                    'other_files': len(result.other_files)
+                })
 
     def _should_exclude_dir(self, dirname: str) -> bool:
         """Check if a directory should be excluded."""

@@ -31,8 +31,8 @@ MOCK_LLM_ENV = {
 
 def _env_without_llm(env):
     env = dict(env)
-    env.pop("ARCHLENS_LLM_PROVIDER", None)
-    env.pop("ARCHLENS_LLM_API_KEY", None)
+    env["ARCHLENS_LLM_PROVIDER"] = ""
+    env["ARCHLENS_LLM_API_KEY"] = ""
     return env
 
 
@@ -103,6 +103,14 @@ class TestAPI:
         client = TestClient(create_app())
         response = client.post("/llm/ask", json={"question": "hi"})
         assert response.status_code == 404
+
+    def test_incomplete_artifacts_dir_404(self, tmp_path, monkeypatch):
+        # The directory exists but no artifact JSONs were written yet.
+        monkeypatch.setenv("ARCHLENS_ARTIFACTS_DIR", str(tmp_path))
+        client = TestClient(create_app())
+        response = client.post("/llm/ask", json={"question": "hi"})
+        assert response.status_code == 404
+        assert "Missing ArchLens artifact" in response.json()["detail"]
 
     @pytest.mark.parametrize(
         "endpoint, payload",
@@ -179,6 +187,20 @@ class TestCLI:
         )
         assert result.exit_code == 1
         assert "Error" in result.stderr
+
+    def test_ask_reports_invalid_llm_config(self, artifacts_dir):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["ask", "What is the architecture?", "-o", str(artifacts_dir)],
+            env={
+                "ARCHLENS_LLM_PROVIDER": "openai",
+                "ARCHLENS_LLM_API_KEY": "test-key",
+                "ARCHLENS_LLM_MODEL": "",
+            },
+        )
+        assert result.exit_code == 1
+        assert "OpenAI model is required" in result.stderr
 
     def test_ask_success(self, artifacts_dir):
         runner = CliRunner()
