@@ -1,0 +1,252 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * ArchLens AI design system — dark-first developer infrastructure.
+ * Single accent: signal jade. All colors in oklch.
+ */
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle: var(--subtle);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-dim: var(--accent-dim);
+  --color-warning: var(--warning);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-blueprint: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-blueprint-mono: "DM Mono", ui-monospace, monospace;
+
+  --shadow-panel: 0 24px 70px -30px oklch(0 0 0 / 0.9);
+  --shadow-glow: 0 0 0 1px var(--accent-dim), 0 0 40px -8px var(--accent-dim);
+}
+
+:root {
+  --radius: 0.375rem;
+
+  --background: oklch(0.16 0.008 250);
+  --foreground: oklch(0.965 0.003 250);
+  --surface: oklch(0.194 0.009 250);
+  --surface-raised: oklch(0.228 0.01 250);
+  --card: oklch(0.194 0.009 250);
+  --card-foreground: oklch(0.965 0.003 250);
+  --popover: oklch(0.213 0.01 250);
+  --popover-foreground: oklch(0.965 0.003 250);
+
+  --primary: oklch(0.84 0.155 168);
+  --primary-foreground: oklch(0.17 0.02 168);
+  --accent: oklch(0.84 0.155 168);
+  --accent-foreground: oklch(0.17 0.02 168);
+  --accent-dim: oklch(0.84 0.155 168 / 0.28);
+
+  --secondary: oklch(0.24 0.01 250);
+  --secondary-foreground: oklch(0.93 0.003 250);
+  --muted: oklch(0.24 0.01 250);
+  --muted-foreground: oklch(0.66 0.012 250);
+  --subtle: oklch(0.5 0.012 250);
+
+  --warning: oklch(0.82 0.14 78);
+  --destructive: oklch(0.64 0.19 22);
+  --destructive-foreground: oklch(0.97 0.003 250);
+
+  --border: oklch(1 0 0 / 0.08);
+  --border-strong: oklch(1 0 0 / 0.16);
+  --input: oklch(1 0 0 / 0.12);
+  --ring: oklch(0.84 0.155 168 / 0.6);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv01", "ss01";
+  }
+
+  ::selection {
+    background: var(--accent-dim);
+    color: var(--color-foreground);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    letter-spacing: -0.035em;
+    line-height: 0.92;
+  }
+}
+
+@utility text-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.04em;
+  line-height: 0.88;
+  font-weight: 700;
+}
+
+@utility label-mono {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-subtle);
+}
+
+@utility grid-texture {
+  background-image:
+    linear-gradient(to right, oklch(1 0 0 / 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, oklch(1 0 0 / 0.035) 1px, transparent 1px);
+  background-size: 56px 56px;
+}
+
+@utility blueprint-grid {
+  background-image: radial-gradient(oklch(1 0 0 / 0.085) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+@utility noise-texture {
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+}
+
+@utility panel {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+@utility hairline {
+  border-top: 1px solid var(--border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+@keyframes float-node {
+  0%, 100% { transform: translate(-50%, -50%); }
+  50% { transform: translate(-50%, calc(-50% - 7px)); }
+}
+
+@keyframes dash-flow {
+  to { stroke-dashoffset: -20; }
+}
+
+@keyframes edge-pulse {
+  0%, 88%, 100% { stroke: var(--border-strong); }
+  94% { stroke: var(--accent-dim); }
+}
+
+@keyframes scan-line {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(1400%); }
+}
+
+/* Printable report document — Poppins throughout. */
+.report-sheet,
+.report-sheet h1,
+.report-sheet h2,
+.report-sheet h3 {
+  font-family: "Poppins", ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: normal;
+  line-height: 1.4;
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 14mm;
+  }
+
+  body[data-printing="report"] {
+    background: #fff;
+    overflow: visible !important;
+  }
+
+  body[data-printing="report"] * {
+    visibility: hidden;
+  }
+
+  body[data-printing="report"] .report-sheet,
+  body[data-printing="report"] .report-sheet * {
+    visibility: visible;
+  }
+
+  body[data-printing="report"] .no-print {
+    display: none !important;
+  }
+
+  body[data-printing="report"] .report-sheet {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    max-width: none;
+    padding: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: #fff;
+  }
+}
+
