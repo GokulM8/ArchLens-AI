@@ -1,0 +1,15 @@
+# Only requirements.txt, app/ and archlens/ are copied; keep everything else
+# (and anything secret) out of the build context.
+.env
+.env.*
+!.env.example
+output/
+tests/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+**/._*
+**/.DS_Store
+*.md

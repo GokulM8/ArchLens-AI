@@ -2,7 +2,7 @@
 
 from typing import Optional
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.models.schemas import AnalysisResult
 from app.graph.graph_builder import GraphBuilder
@@ -93,7 +93,7 @@ class HealthInferenceEngine:
         health_result = HealthResult(
             schema_version="1.0",
             repository_name=self.analysis_result.repository.name,
-            analysis_timestamp=datetime.utcnow().isoformat() + "Z",
+            analysis_timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             overall_health=overall_health,
             dependency_metrics=dependency_metrics,
             coupling_metrics=coupling_metrics,

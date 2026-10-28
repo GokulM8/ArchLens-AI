@@ -9,10 +9,11 @@ import type { ArchitectureEdge, ArchitectureNode } from "@/types/architecture";
 
 const rolePurpose: Record<string, string> = {
   client: "User-facing entry point. Renders the interface and issues requests to the backend.",
-  gateway: "Traffic boundary. Routes, protects and forwards incoming requests to internal services.",
+  gateway:
+    "Traffic boundary. Routes, protects and forwards incoming requests to internal services.",
   service: "Business-logic owner. Executes a bounded responsibility on behalf of API routes.",
   module: "Shared implementation detail. Reused by services rather than exposed directly.",
-  model: "Inference artifact. Loaded by a service to produce predictions.",
+  model: "Data model. Defines the entities and schemas other components exchange or persist.",
   datastore: "System of record. Persists domain data used across services.",
   cache: "Latency layer. Stores short-lived copies of expensive reads.",
   external: "Third-party dependency reached over the network.",
@@ -59,14 +60,18 @@ export interface RepositoryReport {
     strengths: string[];
     warnings: string[];
   };
-  evidence: { verdict: string; points: string[]; confidence: string };
+  evidence: { verdict: string; points: string[]; confidence: string } | null;
 }
 
 function pct(value?: number) {
   return typeof value === "number" ? `${Math.round(value * 100)}%` : "—";
 }
 
-function componentOf(node: ArchitectureNode, edges: ArchitectureEdge[], labels: Record<string, string>): ReportComponent {
+function componentOf(
+  node: ArchitectureNode,
+  edges: ArchitectureEdge[],
+  labels: Record<string, string>,
+): ReportComponent {
   const meta = node.metadata ?? {};
   const outgoing = edges.filter((e) => e.source === node.id);
   const incoming = edges.filter((e) => e.target === node.id);
@@ -114,7 +119,10 @@ export function buildRepositoryReport(result: AnalysisResult): RepositoryReport 
       { label: "Circular dependencies", value: String(summary.circularDependencies) },
       { label: "Architecture score", value: `${health.score} / 100 · ${health.grade}` },
     ],
-    languages: summary.languages.map((l) => ({ name: l.name, share: `${Math.round(l.share * 100)}%` })),
+    languages: summary.languages.map((l) => ({
+      name: l.name,
+      share: `${Math.round(l.share * 100)}%`,
+    })),
     components: graph.nodes.map((node) => componentOf(node, graph.edges, labels)),
     connections: graph.edges.map((edge) => ({
       from: labels[edge.source] ?? edge.source,
@@ -133,10 +141,12 @@ export function buildRepositoryReport(result: AnalysisResult): RepositoryReport 
       strengths: health.strengths,
       warnings: health.warnings,
     },
-    evidence: {
-      verdict: explanation.verdict,
-      points: explanation.evidence,
-      confidence: pct(explanation.confidence),
-    },
+    evidence: explanation
+      ? {
+          verdict: explanation.verdict,
+          points: explanation.evidence,
+          confidence: pct(explanation.confidence),
+        }
+      : null,
   };
 }

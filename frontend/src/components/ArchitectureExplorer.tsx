@@ -1,20 +1,27 @@
 import { useState } from "react";
-import { mockGraph } from "@/data/mockArchitecture";
 import type { ArchitectureGraphData } from "@/types/architecture";
 import { ArchitectureGraph } from "./graph/ArchitectureGraph";
 import { NodeInspector } from "./NodeInspector";
 import { SectionHeading } from "./SectionHeading";
 
 interface ArchitectureExplorerProps {
-  data?: ArchitectureGraphData;
+  data: ArchitectureGraphData;
   withHeading?: boolean;
+  /** Initially selected node id; defaults to the first node. */
+  initialSelected?: string | null | undefined;
+  /** Shown in the toolbar, e.g. "Sample data" or the repository name. */
+  sourceLabel?: string;
 }
 
 export function ArchitectureExplorer({
-  data = mockGraph,
+  data,
   withHeading = true,
+  initialSelected,
+  sourceLabel = "graph",
 }: ArchitectureExplorerProps) {
-  const [selected, setSelected] = useState<string | null>("prediction");
+  const [selected, setSelected] = useState<string | null>(
+    initialSelected ?? data.nodes[0]?.id ?? null,
+  );
   const node = data.nodes.find((n) => n.id === selected) ?? null;
 
   return (
@@ -39,7 +46,7 @@ export function ArchitectureExplorer({
           <div className="panel relative h-[460px] overflow-hidden sm:h-[560px] lg:h-[640px]">
             <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between border-b border-border bg-surface/80 px-4 py-3 backdrop-blur-sm">
               <p className="font-mono text-[0.7rem] tracking-[0.16em] text-subtle uppercase">
-                graph.json · 9 components · 10 edges
+                {sourceLabel} · {data.nodes.length} components · {data.edges.length} edges
               </p>
               <p className="hidden font-mono text-[0.68rem] text-subtle sm:block">
                 drag to pan · click a node

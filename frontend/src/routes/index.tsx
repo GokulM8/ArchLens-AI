@@ -8,6 +8,7 @@ import { HealthDashboard } from "@/components/HealthDashboard";
 import { ArchitectureDiff } from "@/components/ArchitectureDiff";
 import { Technologies } from "@/components/Technologies";
 import { FinalCTA } from "@/components/FinalCTA";
+import { mockDiff, mockExplanation, mockGraph, mockHealth } from "@/data/mockArchitecture";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -39,10 +40,19 @@ function Home() {
 
       <Pipeline />
       <AnalysisConsole />
-      <ArchitectureExplorer />
-      <AIExplanation />
-      <HealthDashboard />
-      <ArchitectureDiff />
+      {/* Landing sections illustrate the product with the bundled sample repository. */}
+      <ArchitectureExplorer
+        data={mockGraph}
+        initialSelected="prediction"
+        sourceLabel="sample repository"
+      />
+      <AIExplanation
+        explanation={mockExplanation}
+        graph={mockGraph}
+        eyebrow="Architecture reasoning · sample"
+      />
+      <HealthDashboard health={mockHealth} />
+      <ArchitectureDiff diff={mockDiff} />
       <Technologies />
       <FinalCTA />
     </>

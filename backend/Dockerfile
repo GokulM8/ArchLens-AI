@@ -1,40 +1,35 @@
-# ArchLens AI Backend Dockerfile
+# ArchLens AI backend (FastAPI + deterministic pipeline)
+# Build context: ./backend  (see docker-compose.yml)
 FROM python:3.11-slim
 
-# Set working directory
 WORKDIR /app
 
-# Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    ARCHLENS_ANALYSES_DIR=/app/output/analyses \
     ARCHLENS_ARTIFACTS_DIR=/app/output
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
+# All runtime dependencies ship wheels, so no compiler is needed.
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy requirements files first for better Docker layer caching
-COPY backend/requirements.txt backend/requirements-dev.txt* ./
+# Application code only — .dockerignore keeps tests, .env and output out.
+COPY app/ ./app/
+COPY archlens/ ./archlens/
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
-
-# Copy application code
-COPY backend/ ./
-
-# Create output directory
-RUN mkdir -p output
-
-# Create non-root user
-RUN adduser --disabled-password --gecos "" appuser && \
-    chown -R appuser:appuser /app
+# Source files can arrive with host-specific modes (e.g. 0700 from FAT/exFAT
+# volumes); code is root-owned and world-readable, only output/ is writable.
+RUN adduser --disabled-password --gecos "" --uid 10001 appuser \
+    && chmod -R a+rX,go-w /app \
+    && mkdir -p /app/output/analyses \
+    && chown -R appuser:appuser /app/output
 USER appuser
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)" || exit 1
+EXPOSE 8000
 
-# Default command
-CMD ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000"]
+# Fails (non-zero) on connection errors and on the 503 /health returns when
+# analysis storage is not writable.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"
+
+CMD ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]

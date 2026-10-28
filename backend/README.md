@@ -61,9 +61,14 @@ pipeline above runs with no LLM configuration.
 All config is via environment variables — no hard-coded credentials or
 model names anywhere:
 
+Providers: `nvidia` (NVIDIA Nemotron via the OpenAI-compatible endpoint),
+`openai`, or `mock`. NVIDIA setup, thinking/streaming modes, structured
+answers, safeguards and the real-endpoint smoke test (`python -m app.llm.smoke`)
+are documented in [../docs/LLM.md](../docs/LLM.md).
+
 ```bash
-export ARCHLENS_LLM_PROVIDER=openai   # or "mock" for offline use
-export ARCHLENS_LLM_MODEL=            # your choice of OpenAI model
+export ARCHLENS_LLM_PROVIDER=openai   # or "nvidia", or "mock" for offline use
+export ARCHLENS_LLM_MODEL=            # your choice of model
 export ARCHLENS_LLM_API_KEY=          # never commit or log this
 export ARCHLENS_LLM_BASE_URL=https://api.openai.com/v1
 export ARCHLENS_LLM_TIMEOUT=30
@@ -259,9 +264,11 @@ utils, and a requirements.txt).
 ## What the analyzer does NOT do (yet)
 
 - ❌ JavaScript/TypeScript support
-- ❌ GitHub / ZIP input
-- ❌ Web frontend
+- ❌ Git / GitHub URL input (`POST /v1/analyses` with `kind: "git"` returns 501)
 - ❌ Persistent conversation storage (in-memory only, per server process)
+
+ZIP upload and the web frontend now exist: see `app/analyses/`, the root
+README and `../docs/API.md`.
 
 Phase 1–5 analysis is deterministic and off by default for the LLM layer; the
 LLM copilot is an optional, env-gated enhancement (see above), never a

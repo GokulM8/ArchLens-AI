@@ -100,7 +100,10 @@ export function ReportDocument({
 
         <Section title="1. Overview">
           {report.overview.map((para) => (
-            <p key={para.slice(0, 24)} className="mt-3 text-[0.92rem] leading-relaxed text-[#39414a]">
+            <p
+              key={para.slice(0, 24)}
+              className="mt-3 text-[0.92rem] leading-relaxed text-[#39414a]"
+            >
               {para}
             </p>
           ))}
@@ -127,7 +130,10 @@ export function ReportDocument({
 
         <Section title="2. Components — what the code does and where it lives">
           {report.components.map((component, index) => (
-            <section key={component.id} className="mt-6 break-inside-avoid border-t border-[#e3e7eb] pt-5 first:mt-4">
+            <section
+              key={component.id}
+              className="mt-6 break-inside-avoid border-t border-[#e3e7eb] pt-5 first:mt-4"
+            >
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <h3 className="text-[1.05rem] font-semibold text-[#12161a]">
                   2.{index + 1} {component.name}
@@ -199,7 +205,10 @@ export function ReportDocument({
             </thead>
             <tbody>
               {report.connections.map((row) => (
-                <tr key={`${row.from}-${row.to}-${row.relation}`} className="border-b border-[#eef1f4]">
+                <tr
+                  key={`${row.from}-${row.to}-${row.relation}`}
+                  className="border-b border-[#eef1f4]"
+                >
                   <td className="py-2 pr-3 text-[#12161a]">{row.from}</td>
                   <td className="py-2 pr-3 text-[#5b636c]">{row.relation}</td>
                   <td className="py-2 pr-3 text-[#12161a]">{row.to}</td>
@@ -231,18 +240,22 @@ export function ReportDocument({
           </div>
         </Section>
 
-        <Section title="5. Why the analysis reached these conclusions">
-          <p className="mt-3 text-[0.92rem] leading-relaxed text-[#39414a]">{report.evidence.verdict}</p>
-          <ul className="mt-3 space-y-1.5 text-[0.85rem] text-[#5b636c]">
-            {report.evidence.points.map((point) => (
-              <li key={point}>— {point}</li>
-            ))}
-          </ul>
-          <p className="mt-3 text-[0.78rem] text-[#8b939c]">
-            Evidence confidence {report.evidence.confidence}. Every statement above is derived from
-            static analysis of the repository, not from guesses about intent.
-          </p>
-        </Section>
+        {report.evidence && (
+          <Section title="5. Why the analysis reached these conclusions">
+            <p className="mt-3 text-[0.92rem] leading-relaxed text-[#39414a]">
+              {report.evidence.verdict}
+            </p>
+            <ul className="mt-3 space-y-1.5 text-[0.85rem] text-[#5b636c]">
+              {report.evidence.points.map((point) => (
+                <li key={point}>— {point}</li>
+              ))}
+            </ul>
+            <p className="mt-3 text-[0.78rem] text-[#8b939c]">
+              Evidence confidence {report.evidence.confidence}. Every statement above is derived
+              from static analysis of the repository, not from guesses about intent.
+            </p>
+          </Section>
+        )}
 
         <footer className="mt-10 border-t border-[#d9dde2] pt-4 text-[0.7rem] text-[#8b939c]">
           ArchLens AI · Understand your codebase. Before you touch a single file.
@@ -265,7 +278,9 @@ function ListBlock({ title, items, mono }: { title: string; items: string[]; mon
   return (
     <div>
       <p className="text-[0.66rem] tracking-[0.12em] text-[#7a828c] uppercase">{title}</p>
-      <ul className={`mt-2 space-y-1 text-[0.8rem] text-[#39414a] ${mono ? "font-mono text-[0.75rem]" : ""}`}>
+      <ul
+        className={`mt-2 space-y-1 text-[0.8rem] text-[#39414a] ${mono ? "font-mono text-[0.75rem]" : ""}`}
+      >
         {items.map((item) => (
           <li key={item}>{item}</li>
         ))}

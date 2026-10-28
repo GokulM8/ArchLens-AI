@@ -1,5 +1,4 @@
 import {
-  analysisStages,
   mockAISummary,
   mockDiff,
   mockExplanation,
@@ -9,62 +8,36 @@ import {
 } from "@/data/mockArchitecture";
 import type {
   AIExplanation,
-  AnalysisStage,
   AnalysisSummary,
   ArchitectureDiffData,
   ArchitectureGraphData,
   ArchitectureHealth,
 } from "@/types/architecture";
-import { ingestArchive } from "@/lib/repoIngest";
-import { analyzeRepository as analyzeFiles } from "@/lib/repoAnalysis";
+import { API_BASE, DEMO_MODE } from "@/lib/config";
 import { setRepoSession } from "@/lib/repoStore";
 
 /**
  * Service layer — the single integration seam between the UI and the ArchLens
- * backend (see FRONTEND_SPEC.md §2).
+ * backend. Contract: docs/API.md (`/v1/analyses`).
  *
- * Priority: call the FastAPI backend (POST /v1/analyses for a ZIP upload,
- * GET /v1/analyses/:id/graph|health|diff). If the backend is unreachable the
- * previous in-browser behavior takes over so the app still works standalone.
- * The returned shapes are identical either way, so components never change.
+ * Two explicit modes, chosen at build time:
+ *  - backend (default): every call goes to the FastAPI backend; failures are
+ *    thrown as ApiError so the UI can show them. Nothing is faked.
+ *  - demo (VITE_DEMO_MODE=true): no backend; returns the bundled sample
+ *    payloads, flagged with `demo: true` so the UI labels them.
  */
-
-/** Relative path through the Vite dev proxy, or a full base URL override
- *  (VITE_API_BASE_URL) for a backend on a different origin. */
-const API_BASE =
-  (import.meta.env['VITE_API_BASE_URL'] as string | undefined) ?? "/api";
-
-/** Latest analysis id returned by the backend, needed by graph/health/diff fetches. */
-let lastAnalysisId: string | null = null;
-
-class NetworkError extends Error {}
 
 export class ApiError extends Error {
   constructor(
     message: string,
+    /** HTTP status, or 0 when the backend could not be reached. */
     readonly status: number,
+    readonly code?: string,
     readonly retryAfter?: number,
   ) {
     super(message);
     this.name = "ApiError";
   }
-}
-
-/** Parse a fetch response as JSON, throwing the backend's `detail` on errors. */
-async function readJson<T>(response: Response): Promise<T> {
-  let body: any = null;
-  try {
-    body = await response.json();
-  } catch {
-    body = null;
-  }
-  if (!response.ok) {
-    const message =
-      body && typeof body.detail === "string" ? body.detail : `Request failed (${response.status})`;
-    const retryAfter = Number.parseInt(response.headers.get("Retry-After") ?? "", 10);
-    throw new ApiError(message, response.status, Number.isFinite(retryAfter) ? retryAfter : undefined);
-  }
-  return body as T;
 }
 
 export interface AnalysisRequest {
@@ -75,176 +48,173 @@ export interface AnalysisRequest {
   file?: File | null;
 }
 
+export type AnalysisStatus = "running" | "completed" | "failed";
+
+export interface AnalysisMetadata {
+  analysisId: string;
+  status: AnalysisStatus;
+  createdAt: string;
+  completedAt: string | null;
+  repository: string | null;
+  source: { kind: "zip"; filename: string };
+  /** true when the analysis succeeded but found no Python modules. */
+  empty: boolean;
+  error: { code: string; message: string } | null;
+}
+
 export interface AnalysisResult {
+  analysisId: string;
   summary: AnalysisSummary;
   graph: ArchitectureGraphData;
   health: ArchitectureHealth;
-  explanation: AIExplanation;
+  /** null when there is nothing to explain (empty analysis). */
+  explanation: AIExplanation | null;
+  /** Deterministic overview paragraphs derived from the artifacts. */
   aiSummary: string[];
+  empty: boolean;
+  /** true only for bundled sample data in demo mode. */
+  demo?: boolean;
 }
 
-const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+export type AnalysisResponse = AnalysisMetadata & AnalysisResult;
 
-/** Repository / analysis id the backend stored (used by the sub-resource calls). */
-export function getLastAnalysisId(): string | null {
-  return lastAnalysisId;
+/** The /v1 error shape: `{ detail, code }` (docs/API.md). */
+interface ErrorBody {
+  detail?: unknown;
+  code?: string;
 }
 
-export async function getArchitectureGraph(): Promise<ArchitectureGraphData> {
-  if (lastAnalysisId) {
-    try {
-      const response = await fetch(`${API_BASE}/v1/analyses/${lastAnalysisId}/graph`);
-      return await readJson<ArchitectureGraphData>(response);
-    } catch {
-      // Backend unreachable — fall back to the sample graph.
-    }
-  }
-  return mockGraph;
-}
-
-export async function getArchitectureHealth(): Promise<ArchitectureHealth> {
-  if (lastAnalysisId) {
-    try {
-      const response = await fetch(`${API_BASE}/v1/analyses/${lastAnalysisId}/health`);
-      return await readJson<ArchitectureHealth>(response);
-    } catch {
-      // Backend unreachable — fall back to the sample health.
-    }
-  }
-  return mockHealth;
-}
-
-export async function getArchitectureDiff(
-  from?: string,
-  to?: string,
-): Promise<ArchitectureDiffData> {
-  const fromId = from ?? lastAnalysisId;
-  const toId = to ?? lastAnalysisId;
-  if (fromId && toId && fromId !== toId) {
-    try {
-      const params = new URLSearchParams({ from_analysis: fromId, to_analysis: toId });
-      const response = await fetch(
-        `${API_BASE}/v1/analyses/${lastAnalysisId ?? toId}/diff?${params}`,
-      );
-      return await readJson<ArchitectureDiffData>(response);
-    } catch {
-      // Backend unreachable — fall back to the sample diff.
-    }
-  }
-  return mockDiff;
-}
-
-export function getAnalysisStages(): AnalysisStage[] {
-  return analysisStages;
-}
-
-export async function analyzeRepository(request: AnalysisRequest): Promise<AnalysisResult> {
-  // Backend path (preferred): upload the archive, let the server analyse it.
-  if (request.kind === "zip" && request.file) {
-    try {
-      return await analyzeViaBackend(request);
-    } catch (error) {
-      if (!(error instanceof NetworkError)) throw error; // real server error — surface it
-      // Backend unreachable → analyse in the browser, as before.
-    }
-  } else if (request.kind === "git") {
-    // The backend intentionally rejects GitHub URLs (no cloning/auth yet). Try it
-    // anyway so a future backend lights up, but keep the sample fallback for 501/offline.
-    try {
-      return await analyzeViaBackend(request);
-    } catch (error) {
-      if (error instanceof NetworkError) {
-        // offline → sample fallback below
-      } else if (error instanceof Error && /not enabled|501/i.test(error.message)) {
-        // backend says git is unsupported → sample fallback below
-      } else {
-        throw error;
-      }
-    }
+/** Fetch JSON, mapping network and HTTP failures onto ApiError. */
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, init);
+  } catch {
+    throw new ApiError(
+      `Cannot reach the ArchLens backend (${API_BASE}). Check that it is running.`,
+      0,
+      "network_error",
+    );
   }
 
-  // Fallback: in-browser analysis for archives, mock payload for git URLs.
-  if (request.kind === "zip" && request.file) {
-    const { repository, files } = await ingestArchive(request.file);
-    const { result, index } = analyzeFiles(repository, files);
+  let body: ErrorBody | null = null;
+  try {
+    body = (await response.json()) as ErrorBody;
+  } catch {
+    body = null;
+  }
+  if (!response.ok) {
+    const gatewayDown = [502, 503, 504].includes(response.status);
+    const message =
+      typeof body?.detail === "string"
+        ? body.detail
+        : gatewayDown
+          ? `The ArchLens backend is unavailable (HTTP ${response.status}). Check that it is running.`
+          : `Request failed (${response.status})`;
+    const retryAfter = Number.parseInt(response.headers.get("Retry-After") ?? "", 10);
+    throw new ApiError(
+      message,
+      response.status,
+      body?.code,
+      Number.isFinite(retryAfter) ? retryAfter : undefined,
+    );
+  }
+  if (body === null) {
+    throw new ApiError(
+      "The backend returned an unreadable response.",
+      response.status,
+      "bad_response",
+    );
+  }
+  return body as T;
+}
+
+function demoResult(repository: string): AnalysisResult {
+  return {
+    analysisId: "demo",
+    summary: { ...mockSummary, repository },
+    graph: mockGraph,
+    health: mockHealth,
+    explanation: mockExplanation,
+    aiSummary: mockAISummary,
+    empty: false,
+    demo: true,
+  };
+}
+
+export async function analyzeRepository(req: AnalysisRequest): Promise<AnalysisResult> {
+  if (DEMO_MODE) {
+    const name =
+      req.kind === "git"
+        ? (req.source.replace(/\/+$/, "").split("/").pop() ?? "repository").replace(/\.git$/, "")
+        : req.source.replace(/\.zip$/i, "");
+    const result = demoResult(name || "my-project");
     setRepoSession({
-      repository,
+      repository: result.summary.repository,
       result,
-      index,
-      real: true,
       analyzedAt: new Date().toLocaleString(),
     });
     return result;
   }
 
-  await delay(300);
-  const name =
-    request.kind === "git"
-      ? (request.source.replace(/\/+$/, "").split("/").pop() ?? "repository").replace(/\.git$/, "")
-      : request.source.replace(/\.zip$/i, "");
+  let init: RequestInit;
+  if (req.kind === "zip") {
+    if (!req.file) throw new ApiError("Choose a .zip archive to upload.", 400, "validation_error");
+    const form = new FormData();
+    form.append("kind", "zip");
+    form.append("file", req.file);
+    init = { method: "POST", body: form };
+  } else {
+    // The backend answers 501 git_not_supported; surface that message as-is.
+    init = {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "git", source: req.source }),
+    };
+  }
 
-  const result: AnalysisResult = {
-    summary: { ...mockSummary, repository: name || "my-project" },
-    graph: mockGraph,
-    health: mockHealth,
-    explanation: mockExplanation,
-    aiSummary: mockAISummary,
-  };
-
-  setRepoSession(null);
+  const result = await request<AnalysisResponse>("/v1/analyses", init);
+  rememberResult(result);
   return result;
 }
 
-/** POST the archive (or git URL) to the backend and adapt its payload. */
-async function analyzeViaBackend(request: AnalysisRequest): Promise<AnalysisResult> {
-  let response: Response;
-  if (request.kind === "zip" && request.file) {
-    const form = new FormData();
-    form.append("kind", "zip");
-    form.append("file", request.file);
-    try {
-      response = await fetch(`${API_BASE}/v1/analyses`, { method: "POST", body: form });
-    } catch {
-      throw new NetworkError("Backend unreachable");
-    }
-  } else {
-    try {
-      response = await fetch(`${API_BASE}/v1/analyses`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: "git", source: request.source }),
-      });
-    } catch {
-      throw new NetworkError("Backend unreachable");
-    }
-  }
+/** Load a stored analysis (e.g. from a shared /architecture?id= link). */
+export async function getAnalysis(analysisId: string): Promise<AnalysisResponse> {
+  const result = await request<AnalysisResponse>(`/v1/analyses/${encodeURIComponent(analysisId)}`);
+  if (result.status === "completed") rememberResult(result);
+  return result;
+}
 
-  const body = await readJson<{
-    analysisId: string;
-    summary: AnalysisSummary;
-    graph: ArchitectureGraphData;
-    health: ArchitectureHealth;
-    explanation: AIExplanation;
-    aiSummary: string[];
-  }>(response);
+export async function listAnalyses(limit = 50): Promise<AnalysisMetadata[]> {
+  if (DEMO_MODE) return [];
+  const body = await request<{ items: AnalysisMetadata[] }>(`/v1/analyses?limit=${limit}`);
+  return body.items;
+}
 
-  lastAnalysisId = body.analysisId;
-  const result: AnalysisResult = {
-    summary: body.summary,
-    graph: body.graph,
-    health: body.health,
-    explanation: body.explanation,
-    aiSummary: body.aiSummary,
-  };
+export async function getArchitectureGraph(analysisId: string): Promise<ArchitectureGraphData> {
+  if (DEMO_MODE) return mockGraph;
+  return request(`/v1/analyses/${encodeURIComponent(analysisId)}/graph`);
+}
 
-  // A backend result has no per-file index in the session (the server does not
-  // return raw sources); the source viewer just disables "whole file" mode.
+export async function getArchitectureHealth(analysisId: string): Promise<ArchitectureHealth> {
+  if (DEMO_MODE) return mockHealth;
+  return request(`/v1/analyses/${encodeURIComponent(analysisId)}/health`);
+}
+
+/** Structural diff from `baselineId` (version A) to `analysisId` (version B). */
+export async function getArchitectureDiff(
+  analysisId: string,
+  baselineId: string,
+): Promise<ArchitectureDiffData> {
+  if (DEMO_MODE) return mockDiff;
+  const params = new URLSearchParams({ baseline: baselineId });
+  return request(`/v1/analyses/${encodeURIComponent(analysisId)}/diff?${params}`);
+}
+
+function rememberResult(result: AnalysisResponse) {
   setRepoSession({
     repository: result.summary.repository,
     result,
-    index: null,
-    real: true,
-    analyzedAt: new Date().toLocaleString(),
+    analyzedAt: new Date(result.completedAt ?? result.createdAt).toLocaleString(),
   });
-  return result;
 }

@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { FileArchive, Github } from "lucide-react";
+import { DEMO_MODE } from "@/lib/config";
 
 interface RepositoryInputProps {
   onSubmit: (source: string, kind: "git" | "zip", file?: File | null) => void;
@@ -39,7 +40,8 @@ export function RepositoryInput({ onSubmit }: RepositoryInputProps) {
         ANALYZE YOUR REPOSITORY
       </h2>
       <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-        ArchLens parses your code locally-shaped structures only — no execution, no secrets read.
+        Upload a ZIP of a Python repository. ArchLens parses the source statically — nothing in the
+        archive is executed.
       </p>
 
       <div
@@ -119,7 +121,9 @@ export function RepositoryInput({ onSubmit }: RepositoryInputProps) {
       </button>
 
       <p className="mt-4 text-center font-mono text-[0.68rem] text-subtle">
-        Uploaded archives are parsed in your browser · a pasted URL loads the sample repository
+        {DEMO_MODE
+          ? "Demo mode · no backend is called and the bundled sample repository is shown"
+          : "Archives are uploaded to your ArchLens backend and analysed there · Git URLs are not supported yet"}
       </p>
     </div>
   );

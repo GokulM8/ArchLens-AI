@@ -1,0 +1,13 @@
+node_modules
+dist
+.output
+.vinxi
+.tanstack
+.env
+.env.*
+!.env.example
+*.local
+*.log
+*.pid
+**/._*
+**/.DS_Store

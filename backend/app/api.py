@@ -26,7 +26,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
+from app.analyses import router as analyses_router
+from app.analyses.safeguards import llm_guard
+from app.analyses.storage import AnalysisStore
 
 from app.llm.context import VerifiedContextBuilder
 from app.llm.guardrails import GroundingGuardrails
@@ -123,32 +129,49 @@ def create_app() -> FastAPI:
         version="0.1.0",
     )
 
+    # Only needed when the UI is served from a different origin than the API
+    # (the Vite proxy and the nginx deployment are same-origin).
+    cors_origins = [o.strip() for o in os.getenv("ARCHLENS_CORS_ORIGINS", "").split(",") if o.strip()]
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_methods=["GET", "POST"],
+            allow_headers=["Content-Type"],
+        )
+
     @app.get("/health")
-    def health() -> Dict[str, Any]:
-        """Simple liveness/config probe. LLM is optional."""
-        return {
-            "status": "ok",
+    def health() -> Any:
+        """Readiness probe: 503 unless analysis storage is writable. LLM is optional."""
+        analyses_dir = AnalysisStore.from_env().base_dir
+        storage_ok = _storage_writable(analyses_dir)
+        body = {
+            "status": "ok" if storage_ok else "unavailable",
+            "storage_writable": storage_ok,
+            "analyses_dir": str(analyses_dir),
             "llm_configured": LLMProviderFactory.is_configured(),
             "artifacts_dir": str(get_artifacts_dir()),
         }
+        return JSONResponse(body, status_code=200 if storage_ok else 503)
 
     @app.get("/llm/status")
     def llm_status() -> Dict[str, Any]:
         """Report LLM provider configuration status without leaking secrets."""
         error = LLMProviderFactory.get_configuration_error()
         return {
+            # Never includes the API key, base URL credentials or headers.
             "configured": LLMProviderFactory.is_configured(),
             "provider": os.getenv("ARCHLENS_LLM_PROVIDER", ""),
             "model": os.getenv("ARCHLENS_LLM_MODEL", ""),
             "configuration_error": error,
         }
 
-    @app.post("/llm/explain")
+    @app.post("/llm/explain", dependencies=[Depends(llm_guard)])
     async def llm_explain(service: LLMService = Depends(get_llm_service_for_request)) -> Any:
         """Explain the overall repository architecture."""
         return await service.explain_architecture({})
 
-    @app.post("/llm/ask")
+    @app.post("/llm/ask", dependencies=[Depends(llm_guard)])
     async def llm_ask(req: AskRequest, service: LLMService = Depends(get_llm_service_for_request)) -> Any:
         """Answer an architecture question from the deterministic artifacts."""
         return await service.ask(
@@ -157,7 +180,7 @@ def create_app() -> FastAPI:
             conversation_id=req.conversation_id,
         )
 
-    @app.post("/llm/component")
+    @app.post("/llm/component", dependencies=[Depends(llm_guard)])
     async def llm_component(req: ExplainRequest, service: LLMService = Depends(get_llm_service_for_request)) -> Any:
         """Explain a specific component."""
         return await service.explain_component(
@@ -166,7 +189,7 @@ def create_app() -> FastAPI:
             conversation_id=req.conversation_id,
         )
 
-    @app.post("/llm/dependency")
+    @app.post("/llm/dependency", dependencies=[Depends(llm_guard)])
     async def llm_dependency(req: DependencyRequest, service: LLMService = Depends(get_llm_service_for_request)) -> Any:
         """Explain the dependency between two components."""
         return await service.explain_dependency(
@@ -176,7 +199,7 @@ def create_app() -> FastAPI:
             conversation_id=req.conversation_id,
         )
 
-    @app.post("/llm/risk")
+    @app.post("/llm/risk", dependencies=[Depends(llm_guard)])
     async def llm_risk(req: ExplainRequest, service: LLMService = Depends(get_llm_service_for_request)) -> Any:
         """Explain an architectural risk."""
         return await service.explain_risk(
@@ -185,7 +208,7 @@ def create_app() -> FastAPI:
             conversation_id=req.conversation_id,
         )
 
-    @app.post("/llm/recommendation")
+    @app.post("/llm/recommendation", dependencies=[Depends(llm_guard)])
     async def llm_recommendation(req: ExplainRequest, service: LLMService = Depends(get_llm_service_for_request)) -> Any:
         """Explain an evolution recommendation."""
         return await service.explain_recommendation(
@@ -194,7 +217,7 @@ def create_app() -> FastAPI:
             conversation_id=req.conversation_id,
         )
 
-    @app.post("/llm/impact")
+    @app.post("/llm/impact", dependencies=[Depends(llm_guard)])
     async def llm_impact(req: ExplainRequest, service: LLMService = Depends(get_llm_service_for_request)) -> Any:
         """Analyze the impact of changing a component."""
         return await service.explain_impact(
@@ -203,7 +226,7 @@ def create_app() -> FastAPI:
             conversation_id=req.conversation_id,
         )
 
-    @app.post("/llm/refactor-plan")
+    @app.post("/llm/refactor-plan", dependencies=[Depends(llm_guard)])
     async def llm_refactor_plan(req: ExplainRequest, service: LLMService = Depends(get_llm_service_for_request)) -> Any:
         """Generate a refactoring plan for a recommendation."""
         return await service.generate_refactoring_plan(
@@ -212,7 +235,7 @@ def create_app() -> FastAPI:
             conversation_id=req.conversation_id,
         )
 
-    @app.post("/llm/summary")
+    @app.post("/llm/summary", dependencies=[Depends(llm_guard)])
     async def llm_summary(service: LLMService = Depends(get_llm_service_for_request)) -> Any:
         """Summarize the repository architecture."""
         return await service.summarize_repository({})
@@ -236,7 +259,19 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Conversation not found")
         return conversation
 
+    analyses_router.install(app)
     return app
+
+
+def _storage_writable(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".healthcheck"
+        probe.write_text("ok")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
 
 
 app = create_app()

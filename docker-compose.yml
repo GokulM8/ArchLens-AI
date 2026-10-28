@@ -1,49 +1,71 @@
+# ArchLens AI — local stack: nginx → (frontend SSR, FastAPI backend).
+#
+#   docker compose up --build -d
+#   open http://localhost:8080
+#
+# Only nginx is published. Backend configuration comes from the optional
+# ./backend/.env (copy backend/.env.example); it is read at runtime and never
+# copied into an image.
+
 services:
-  archlens-backend:
+  backend:
     build:
-      context: .
-      dockerfile: backend/Dockerfile
-    ports:
-      - "8001:8000"
+      context: ./backend
     env_file:
-      - ./backend/.env
+      - path: ./backend/.env
+        required: false
     environment:
-      - ARCHLENS_ARTIFACTS_DIR=/app/output
+      ARCHLENS_ANALYSES_DIR: /app/output/analyses
+      ARCHLENS_ARTIFACTS_DIR: /app/output
     volumes:
-      # Persistent output directory
-      - ./output:/app/output
+      - archlens-data:/app/output
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 30s
-      timeout: 10s
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"
+      interval: 15s
+      timeout: 5s
       retries: 3
-      start_period: 40s
+      start_period: 15s
 
-  # Optional: Redis for caching and session management
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: /api
+        VITE_DEMO_MODE: "false"
     restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
-  # Optional: Nginx reverse proxy
   nginx:
-    image: nginx:alpine
+    image: nginx:1.27-alpine
     ports:
-      - "80:80"
-      - "443:443"
+      - "${ARCHLENS_HTTP_PORT:-8080}:80"
     volumes:
-      - ./nginx:/etc/nginx/conf.d
-      - ./ssl:/etc/nginx/ssl
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
-      - archlens-backend
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/nginx-health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
 volumes:
-  redis_data:
-  # nginx directory structure (create if needed)
-  # - ./nginx/
-  # - ./ssl/
+  archlens-data:

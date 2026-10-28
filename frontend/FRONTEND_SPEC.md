@@ -1,3 +1,9 @@
+> **Status (2026-10-28):** Parts of this spec are historical. The frontend no longer
+> analyses archives in the browser and has no silent mock fallback. It calls the
+> backend `/v1/analyses` API ([`docs/API.md`](../docs/API.md)), and sample data is
+> used only on the landing page and in explicit demo mode (`VITE_DEMO_MODE=true`).
+> Sections 4 (client-side pipeline) and 7–8 (gaps) describe the pre-integration state.
+
 # ArchLens AI — Frontend Specification & Backend Contract
 
 Everything the frontend does today, every field it consumes, and exactly what a backend

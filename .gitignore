@@ -1,0 +1,53 @@
+# macOS metadata (AppleDouble files appear on exFAT/external drives)
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Environment / secrets (templates stay tracked)
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+
+# Node / frontend build output
+node_modules/
+dist/
+.output/
+.vinxi/
+.nitro/
+.tanstack/
+
+# Runtime / generated
+output/
+*.log
+logs/
+*.pid
+tmp/
+.tmp/
+
+# TLS private keys must never be committed
+*.key
+*.pem
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Unrelated model artifacts (deepfake detection) kept locally, not part of ArchLens
+/ArchLens-AI_models.zip
+/ArchLens-AI_models/

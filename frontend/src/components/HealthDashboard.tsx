@@ -1,15 +1,14 @@
 import { AlertTriangle, Check } from "lucide-react";
-import { mockHealth } from "@/data/mockArchitecture";
 import type { ArchitectureHealth } from "@/types/architecture";
 import { useCountUp, useInViewOnce } from "@/hooks/useCountUp";
 import { SectionHeading } from "./SectionHeading";
 
 export function HealthDashboard({
   compact = false,
-  health = mockHealth,
+  health,
 }: {
   compact?: boolean;
-  health?: ArchitectureHealth;
+  health: ArchitectureHealth;
 }) {
   const { ref, inView } = useInViewOnce<HTMLDivElement>();
   const score = useCountUp(health.score, inView, 1400);
@@ -29,7 +28,7 @@ export function HealthDashboard({
                 ARCHITECTURE BREAKS.
               </>
             }
-            copy="Coupling, dependency depth, complexity and cycles — scored continuously so drift is visible before it becomes debt."
+            copy="Dependency structure, layer integrity, coupling, complexity and centralization — scored from the static analysis so drift is visible before it becomes debt."
           />
         )}
 
@@ -41,7 +40,13 @@ export function HealthDashboard({
             <p className="label-mono self-start">Architecture health</p>
             <div className="relative mt-6 h-[180px] w-[180px]">
               <svg viewBox="0 0 160 160" className="h-full w-full -rotate-90">
-                <circle cx="80" cy="80" r="68" className="fill-none stroke-border" strokeWidth="3" />
+                <circle
+                  cx="80"
+                  cy="80"
+                  r="68"
+                  className="fill-none stroke-border"
+                  strokeWidth="3"
+                />
                 <circle
                   cx="80"
                   cy="80"
@@ -71,13 +76,19 @@ export function HealthDashboard({
               <p className="label-mono">Signals</p>
               <ul className="mt-4 space-y-3">
                 {health.strengths.map((s) => (
-                  <li key={s} className="flex items-start gap-2.5 text-[0.84rem] text-foreground/90">
+                  <li
+                    key={s}
+                    className="flex items-start gap-2.5 text-[0.84rem] text-foreground/90"
+                  >
                     <Check size={14} className="mt-0.5 shrink-0 text-accent" aria-hidden />
                     {s}
                   </li>
                 ))}
                 {health.warnings.map((w) => (
-                  <li key={w} className="flex items-start gap-2.5 text-[0.84rem] text-muted-foreground">
+                  <li
+                    key={w}
+                    className="flex items-start gap-2.5 text-[0.84rem] text-muted-foreground"
+                  >
                     <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warning" aria-hidden />
                     {w}
                   </li>

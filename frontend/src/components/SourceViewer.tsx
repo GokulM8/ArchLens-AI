@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Check, Copy, X } from "lucide-react";
 import type { ArchitectureNode } from "@/types/architecture";
-import { getFileContent } from "@/lib/repoStore";
 
 interface SourceViewerProps {
   node: ArchitectureNode;
@@ -11,14 +10,10 @@ interface SourceViewerProps {
 /** Full-window view of the source ArchLens read for a component. */
 export function SourceViewer({ node, onClose }: SourceViewerProps) {
   const meta = node.metadata ?? {};
-  const sourcePath = meta.sourcePath;
-  const [full, setFull] = useState(false);
-  const realFile = sourcePath ? getFileContent(sourcePath) : null;
-  const excerpt = (meta.snippet ?? "").replace(/\s+$/, "");
-  const showFull = full && !!realFile;
-  const code = showFull ? (realFile ?? "").replace(/\s+$/, "") : excerpt;
+  // The backend returns a real excerpt per component, not whole files.
+  const code = (meta.snippet ?? "").replace(/\s+$/, "");
   const lines = code ? code.split("\n") : [];
-  const startLine = showFull ? 1 : (meta.snippetStart ?? meta.lines?.[0] ?? 1);
+  const startLine = meta.snippetStart ?? meta.lines?.[0] ?? 1;
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -64,15 +59,6 @@ export function SourceViewer({ node, onClose }: SourceViewerProps) {
               {meta.snippetLanguage ?? "code"}
               {lines.length > 0 && ` · ${startLine}–${startLine + lines.length - 1}`}
             </span>
-            {realFile && (
-              <button
-                type="button"
-                onClick={() => setFull((v) => !v)}
-                className="inline-flex items-center gap-2 rounded-md border border-border-strong px-3 py-2 font-mono text-[0.66rem] tracking-[0.12em] text-foreground uppercase transition-colors hover:border-accent/60 hover:text-accent"
-              >
-                {showFull ? "Excerpt" : "Whole file"}
-              </button>
-            )}
             <button
               type="button"
               onClick={copy}

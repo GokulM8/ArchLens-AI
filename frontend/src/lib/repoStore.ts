@@ -1,19 +1,15 @@
 import { useSyncExternalStore } from "react";
-import type { RepoIndex } from "@/lib/repoAnalysis";
 import type { AnalysisResult } from "@/services/api";
 
 /**
- * Holds the currently analyzed repository for the session so the document page,
- * code explorer and source view all read the same real files.
+ * Holds the currently open analysis for the session so the dashboard,
+ * architecture explorer and document page all read the same result.
+ * In-memory only; stored analyses can be reopened from the backend by id.
  */
 
 export interface RepoSession {
   repository: string;
   result: AnalysisResult;
-  /** Per-file index from in-browser analysis; null when the backend produced the result. */
-  index: RepoIndex | null;
-  /** true when the payload came from an uploaded archive, false for the sample. */
-  real: boolean;
   analyzedAt: string;
 }
 
@@ -40,10 +36,4 @@ export function useRepoSession(): RepoSession | null {
     () => session,
     () => null,
   );
-}
-
-/** Real file content for a path, when a repository has been uploaded. */
-export function getFileContent(path?: string): string | null {
-  if (!path || !session || !session.index) return null;
-  return session.index.files[path]?.content ?? null;
 }

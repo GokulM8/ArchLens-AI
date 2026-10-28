@@ -1,121 +1,197 @@
 # ArchLens AI — Python Repository Analyzer + Architecture Copilot
 
-ArchLens AI is a deterministic Python repository analysis engine that reconstructs architecture from source code, plus an **optional** LLM-powered Architecture Copilot that explains and reasons over the results.
+ArchLens AI reconstructs a Python repository's architecture from its source code. It has three parts:
 
-The deterministic pipeline (Phases 1–5) produces five fact-only artifacts — `analysis.json`, `graph.json`, `architecture.json`, `health.json`, `evolution.json` — with **no AI and no configuration required**. The Architecture Copilot (Phase 6) adds explanations, summaries, risk analysis, and refactoring plans over those artifacts via an optional, env-gated LLM layer. **The deterministic engine is the source of truth; the LLM is an explanation, synthesis, and reasoning layer.**
+- **Deterministic engine (Phases 1–5).** Produces five artifacts: `analysis.json`, `graph.json`, `architecture.json`, `health.json` and `evolution.json`. No AI and no configuration required.
+- **Web app.** A FastAPI `/v1/analyses` API plus a TanStack Start frontend. Upload a ZIP, then explore the inferred architecture graph, health score and summary, and diff two analyses.
+- **Optional LLM Architecture Copilot (Phase 6).** Explains and answers questions about an analysis, grounded in the artifacts: in the web UI per uploaded analysis (`/v1/analyses/{id}/copilot`), and via `/llm/*` and CLI commands. Providers: NVIDIA Nemotron, OpenAI-compatible, or an offline mock. Env-gated and never required — see [docs/LLM.md](docs/LLM.md).
 
-## Quick start
+**The deterministic engine is the source of truth.** The web UI's graph, health, "explanation" and "summary" are generated from the artifacts with no model call. Only the separate Copilot panel uses an LLM, and its answers distinguish facts cited from the analysis (checked against it) from the model's interpretation and suggestions.
 
-### Prerequisites
+## What works today
+
+| Capability | Status |
+|---|---|
+| Python static analysis (AST: modules, classes, functions, routes, imports, dependencies) | ✅ |
+| Dependency graph, architecture inference, health/risk, evolution artifacts | ✅ |
+| CLI `python -m archlens analyze PATH` | ✅ |
+| HTTP API `/v1/analyses`: ZIP upload, results, graph, health, diff | ✅ ([contract](docs/API.md)) |
+| Web UI: upload → graph + inspector (with real source excerpts) → health → summary → report | ✅ |
+| Stored analyses survive backend restarts (files on disk / Docker volume) | ✅ |
+| Diff between two stored analyses | ✅ |
+| Docker Compose: nginx + frontend + backend, with real health checks | ✅ |
+| Optional LLM Copilot over uploaded analyses (web panel, `/v1/analyses/{id}/copilot`) | ✅ mock-tested; NVIDIA endpoint: smoke test pending an API key |
+| Optional LLM Copilot over CLI output (`/llm/*`, CLI `explain`/`ask`) | ✅ |
+| Per-IP rate limits, daily LLM quota, output-token ceiling | ✅ in-memory, single process |
+| Git / GitHub URL input | ❌ API returns `501 git_not_supported` |
+| Languages other than Python | ❌ |
+| Authentication, multi-user isolation, retention | ❌ |
+| HTTPS inside the stack | ❌ terminate TLS in front (see below) |
+
+## Repository layout
+
+```
+backend/    FastAPI app, deterministic pipeline, LLM copilot, tests
+frontend/   TanStack Start (React 19, Vite) web UI
+nginx/      reverse proxy config used by docker-compose
+docs/API.md /v1 request/response contract
+examples/   sample FastAPI project to analyse
+scripts/    clean-appledouble.sh (see "External drives" below)
+```
+
+## Local development
+
+### Backend
+
+Requires Python ≥ 3.11.
 
 ```bash
-# Clone the repository
-git clone <repo-url>
-cd ArchLens-AI
-
-# Navigate to backend directory
 cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
 
-# Install runtime dependencies
-pip install -r requirements.txt
-
-# Install development dependencies  
-pip install -r requirements-dev.txt
-```
-
-### Docker Deployment (Recommended)
-
-#### Using Docker Compose
-
-```bash
-# Build and start all services
-cd /path/to/ArchLens-AI
-docker-compose up --build -d
-
-# Or build just the backend service
-docker-compose build archlens-backend
-docker-compose up archlens-backend -d
-```
-
-#### Using Dockerfile directly
-
-```bash
-# Build the backend image
-cd backend
-docker build -t archlens-backend .
-
-# Run with environment variables
-docker run -p 8000:8000 \
-  -e ARCHLENS_ARTIFACTS_DIR=/app/output \
-  -e ARCHLENS_LLM_PROVIDER=mock \
-  -e ARCHLENS_LLM_API_KEY=test-key \
-  archlens-backend
-```
-
-#### Environment Configuration
-
-Create a `.env` file in the backend directory:
-
-```bash
-# Required
-ARCHLENS_ARTIFACTS_DIR=/app/output
-ARCHLENS_LLM_PROVIDER=mock
-ARCHLENS_LLM_API_KEY=test-key
-
-# Optional (uncomment and configure for production)
-# ARCHLENS_LLM_PROVIDER=openai
-# ARCHLENS_LLM_MODEL=gpt-4
-# ARCHLENS_LLM_API_KEY=your-openai-api-key
-# ARCHLENS_LLM_BASE_URL=https://api.openai.com/v1
-# ARCHLENS_LLM_TIMEOUT=30
-```
-
-### Local Development
-
-```bash
-# Analyze the example FastAPI project (produces all five artifacts)
-cd backend
+# CLI: analyse a repository, write the five artifacts to ./output
 python -m archlens analyze ../examples/fastapi_project -o output
 
-# Run the test suite
-python -m pytest
-
-# Run a specific test
-python -m pytest tests/test_phase6_integration.py -v
+# API on http://localhost:8000 (stores uploads under ./output/analyses)
+uvicorn app.api:app --reload --port 8000
 ```
 
-### API Testing
+### Frontend
+
+Requires [Bun](https://bun.sh) (the lockfile is `bun.lock`).
 
 ```bash
-# Start the FastAPI server
-cd backend
-uvicorn app.api:app --host 0.0.0.0 --port 8000
-
-# Test with curl
-# Health check
-curl -X GET http://localhost:8000/health
-
-# Ask architecture question
-curl -X POST http://localhost:8000/llm/ask \
-  -H "Content-Type: application/json" \
-  -d '{"question": "What is the architecture?"}'
+cd frontend
+bun install
+bun run dev          # Vite dev server (http://localhost:5173), proxies /api → http://localhost:8000
 ```
 
-## Architecture Copilot (optional LLM layer)
+To use the production build locally:
 
-The copilot explains, summarizes, and reasons over the five deterministic artifacts. It is **entirely optional and env-gated** — the deterministic pipeline above runs with no LLM configuration.
+```bash
+bun run build && bun run start   # srvx on $PORT (default 3000)
+```
+
+`bun run start` serves pages and assets but has **no `/api` proxy**. Use the
+Vite dev server or Docker Compose (nginx) for a working UI, or set
+`VITE_API_BASE_URL` to the backend's URL and add the frontend origin to
+`ARCHLENS_CORS_ORIGINS`.
 
 ### Configuration
 
-All config is via environment variables — no hard-coded credentials or model names anywhere:
+| Where | File | Notes |
+|---|---|---|
+| Backend | `backend/.env` (copy `backend/.env.example`) | Storage dir, upload limits, CORS, optional LLM. Git-ignored and loaded at runtime |
+| Frontend | `frontend/.env.local` (see `frontend/.env.example`) | `VITE_API_BASE_URL` (default `/api`), `VITE_DEMO_MODE`. **Embedded in the bundle — never put secrets here** |
+
+**Demo mode.** With `VITE_DEMO_MODE=true` the frontend makes no backend calls
+and shows the bundled sample repository, labelled "demo". In the default
+backend mode, failures are shown as errors and sample data is never used as
+a fallback. The landing page (`/`) always shows the sample repository as
+illustration.
+
+## Tests
 
 ```bash
-export ARCHLENS_LLM_PROVIDER=openai   # or "mock" for offline use
-export ARCHLENS_LLM_MODEL=            # your choice of OpenAI model
-export ARCHLENS_LLM_API_KEY=          # never commit or log this
-export ARCHLENS_LLM_BASE_URL=https://api.openai.com/v1
-export ARCHLENS_LLM_TIMEOUT=30
+cd backend && python -m pytest                 # full backend suite (incl. /v1 API integration tests)
+cd frontend && bun run typecheck && bun run build
 ```
+
+## Docker Compose
+
+```bash
+cp backend/.env.example backend/.env   # optional; every value has a default
+docker compose up --build -d
+open http://localhost:8080             # ARCHLENS_HTTP_PORT overrides 8080
+docker compose ps                      # all three services should be "healthy"
+curl http://localhost:8080/api/health
+```
+
+| Service | Role | Published |
+|---|---|---|
+| `nginx` | `/api/*` → backend (prefix stripped), everything else → frontend | `8080` |
+| `frontend` | SSR + static assets (srvx, Node 22) | internal `3000` |
+| `backend` | FastAPI + pipeline (uvicorn) | internal `8000` |
+
+- Analyses are stored in the `archlens-data` named volume
+  (`docker compose down -v` deletes them).
+- `backend/.env` is optional and read **at runtime**. `.dockerignore` keeps it
+  (and every `.env*`) out of the images.
+- Health checks: the backend's `/health` returns 503 unless analysis storage
+  is writable. The frontend check fetches `/`. nginx waits for both to be
+  healthy before starting.
+- Upload size is enforced twice: nginx `client_max_body_size 55m` and the
+  backend's `ARCHLENS_MAX_UPLOAD_MB` (default 50). Change both together.
+- nginx mounts `nginx/nginx.conf` as a single file. After editing it, run
+  `docker compose up -d --force-recreate nginx` (a plain reload can miss the
+  change on some filesystems).
+
+### Production TLS
+
+The stack serves plain HTTP and ships **no certificates**. For a real
+deployment, terminate TLS in front of nginx with a load balancer, an ingress,
+or a separate proxy such as Caddy or Traefik with Let's Encrypt. Publish only
+443 there, and put no keys in this repository (`*.key`/`*.pem` are
+git-ignored). Also add authentication before exposing the app: the API has
+none, and anyone who can reach it can read every stored analysis.
+
+## Known limitations
+
+- **Python only.** Other files are counted but not analysed.
+- **ZIP upload only.** Git URLs return `501`.
+- **Synchronous analysis.** `POST /v1/analyses` blocks until the pipeline
+  finishes (nginx allows 300 s). Concurrency is capped by
+  `ARCHLENS_MAX_CONCURRENT_ANALYSES` (default 2), and extra requests get
+  `429` with `Retry-After`. There is no progress streaming, so the UI shows an
+  indeterminate progress state.
+- **Storage.** Each analysis is a directory on local disk. There is no database,
+  retention policy, access control or multi-instance sharing, so run one
+  backend replica per volume.
+- **Copilot.** Answers are not streamed to the browser. `/llm/conversations`
+  are in memory and lost on restart; the web Copilot is single-turn. Rate limits
+  are per process and reset on restart. Real NVIDIA compatibility is verified
+  only by the smoke test (`python -m app.llm.smoke`), not by `pytest`.
+- **No access control.** Analysis ids are unguessable (uuid4), but listing is on
+  by default and any id holder can read an analysis and use the Copilot on it.
+  Set `ARCHLENS_ANALYSIS_LISTING=false` publicly; it is still not authorization.
+- **Session state in the browser** is in memory. Reopen a stored analysis via
+  `/architecture?id=<analysisId>` or the list on `/architecture`.
+- **Large graphs.** Repositories with more than 24 components are grouped by
+  package directory in the graph. The diff's mini-graphs get crowded above
+  ~12 components; the change list is the precise view.
+- **Source viewer** shows a ≤14-line excerpt per component, not whole files.
+
+### External drives (FAT32/exFAT on macOS)
+
+macOS writes a `._<name>` AppleDouble file next to every file it creates on
+FAT/exFAT volumes, including inside `.git`. These break git
+(`non-monotonic index` errors) and Docker builds
+(`failed to xattr ... ._*`). Run `scripts/clean-appledouble.sh` before
+`docker compose build` and if git starts printing index errors. It deletes
+only files with the AppleDouble signature. Moving the repository to an APFS
+volume avoids the problem entirely.
+
+## Architecture Copilot (optional LLM layer)
+
+The copilot explains, summarizes, and reasons over the five deterministic artifacts. It is **entirely optional and env-gated** — the deterministic pipeline above runs with no LLM configuration. **Full guide: [docs/LLM.md](docs/LLM.md)** (NVIDIA setup, thinking/streaming, structured answers, errors, data sent to the provider, quotas, smoke test).
+
+### Configuration
+
+All config is via environment variables in `backend/.env` (backend only — never a `VITE_*` variable):
+
+```bash
+ARCHLENS_LLM_PROVIDER=nvidia          # or "openai", or "mock" for offline use
+ARCHLENS_LLM_API_KEY=                 # never commit or log this
+ARCHLENS_LLM_MODEL=nvidia/nemotron-3.5-super-vl-120b-a12b
+ARCHLENS_LLM_BASE_URL=https://integrate.api.nvidia.com/v1
+ARCHLENS_LLM_MAX_TOKENS=2048
+ARCHLENS_LLM_THINKING=false
+ARCHLENS_LLM_STREAMING=false
+```
+
+Check the endpoint with `cd backend && python -m app.llm.smoke` (real, quota-counted
+calls; exits `2` = pending when no key is set).
 
 `is_configured()` requires both a provider name and an API key. Without them,
 all copilot operations return a clear structured error — never a traceback.
@@ -156,7 +232,8 @@ Run with FastAPI (e.g. `uvicorn app.api:app`), pointing
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/health` | Liveness + `llm_configured` |
+| GET | `/health` | Readiness: 503 unless analysis storage is writable; reports `llm_configured` |
+| * | `/v1/analyses…` | Upload & results API — see [docs/API.md](docs/API.md) |
 | GET | `/llm/status` | Provider config status (never leaks the API key) |
 | POST | `/llm/explain` | Explain architecture |
 | POST | `/llm/ask` | Ask an architecture question |
@@ -168,6 +245,7 @@ Run with FastAPI (e.g. `uvicorn app.api:app`), pointing
 | POST | `/llm/refactor-plan` | Refactoring plan |
 | POST | `/llm/summary` | Repository summary |
 | POST | `/llm/conversations` | Create a conversation |
+| POST | `/v1/analyses/{id}/copilot` | Copilot over an uploaded analysis — see [docs/API.md](docs/API.md) |
 | GET | `/llm/conversations/{id}` | Read a conversation (multi-turn history) |
 
 ### How it works
@@ -182,7 +260,12 @@ Run with FastAPI (e.g. `uvicorn app.api:app`), pointing
 - **LLMService** (`app/llm/service.py`) orchestrates nine operations, in-memory
   conversations, and structured error handling
   (`configuration_error` / `invalid_operation` / `invalid_target` /
-  `execution_error` / `validation_warning`).
+  `execution_error` / `validation_warning`, plus provider errors such as
+  `rate_limited`, `timeout`, `invalid_model_output`). A failed provider call is
+  always reported as a failure, never as an empty success.
+- Every prompt carries the citable fact sheet from
+  `VerifiedContextBuilder.verified_facts()`; in structured mode (`/v1`) the
+  answer must be a `CopilotAnswer` JSON object whose citations are checked.
 
 See `../PHASE_6_REPORT.md` for the full phase report.
 
@@ -270,7 +353,10 @@ backend/
 ├── app/                        # package root
 │   ├── analyzer.py             # orchestrates scan → parse → classify → JSON
 │   ├── cli.py                  # `python -m archlens` CLI (click) + `explain`/`ask`
-│   ├── api.py                  # FastAPI app + `/health` + `/llm/*` endpoints
+│   ├── api.py                  # FastAPI app: `/health`, `/llm/*`, mounts `/v1`
+│   ├── pipeline.py             # Phase 1–5 pipeline shared by CLI and API
+│   ├── analyses/               # `/v1/analyses`: safe ZIP ingest, storage, view adapter
+
 │   ├── analyzers/
 │   │   ├── scanner.py          # file discovery + exclusions + binary detection
 │   │   ├── python/
@@ -294,7 +380,7 @@ backend/
 │   └── utils/
 ├── archlens/                   # thin wrapper enabling `python -m archlens`
 │   └── __main__.py
-├── tests/                      # 414 tests across all six phases
+├── tests/                      # backend test suite (all phases + /v1 API)
 ├── requirements.txt
 ├── requirements-dev.txt
 └── pyproject.toml
@@ -306,181 +392,6 @@ utils, and a requirements.txt).
 
 ---
 
-## What the analyzer does NOT do (yet)
-
-- ❌ JavaScript/TypeScript support
-- ❌ GitHub / ZIP input
-- ❌ Web frontend
-- ❌ Persistent conversation storage (in-memory only, per server process)
-
-Phase 1–5 analysis is deterministic and off by default for the LLM layer; the
-LLM copilot is an optional, env-gated enhancement (see above), never a
-dependency of the core analysis.
-
----
-
-## Production Deployment Checklist
-
-### Docker Compose Setup
-
-1. **Copy .env.example to .env**
-2. **Set required environment variables**:
-   - `ARCHLENS_ARTIFACTS_DIR`: Path to output directory
-   - `ARCHLENS_LLM_PROVIDER`: "mock" (development) or "openai" (production)
-   - `ARCHLENS_LLM_API_KEY`: Your LLM API key
-3. **Mount persistent volumes** for:
-   - Application code (optional, for development)
-   - Output directory (essential for data persistence)
-4. **Configure networking**:
-   - Expose port 8000
-   - Configure domain and SSL (if using nginx)
-
-### Docker Swarm/Kubernetes Deployment
-
-```yaml
-# Example Kubernetes deployment
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: archlens-backend
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: archlens-backend
-  template:
-    metadata:
-      labels:
-        app: archlens-backend
-    spec:
-      containers:
-      - name: archlens-backend
-        image: archlens-backend:latest
-        ports:
-        - containerPort: 8000
-        env:
-        - name: ARCHLENS_ARTIFACTS_DIR
-          value: "/app/output"
-        - name: ARCHLENS_LLM_PROVIDER
-          value: "mock"
-        - name: ARCHLENS_LLM_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: archlens-secrets
-              key: api-key
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "250m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-        volumeMounts:
-        - name: output-volume
-          mountPath: /app/output
-      volumes:
-      - name: output-volume
-        persistentVolumeClaim:
-          claimName: archlens-output-pvc
-```
-
-### Monitoring and Logging
-
-1. **Health checks**: All services include health endpoints
-2. **Application logging**: Structured logs to stdout/stderr
-3. **Infrastructure monitoring**:
-   - Prometheus metrics (implement if required)
-   - Grafana dashboards
-4. **Log aggregation**: ELK stack or similar
-
-### Backup and Recovery
-
-1. **Backup strategies**:
-   - Container image snapshots
-   - Database backups (if applicable)
-   - Configuration file backups
-2. **Disaster recovery**:
-   - Multi-zone deployment
-   - Automated failover
-   - Backup and restore procedures
-
-### Security Hardening
-
-1. **Network security**:
-   - Firewall rules
-   - TLS/SSL encryption
-   - VPN access if needed
-2. **Application security**:
-   - Environment variable security
-   - Container security
-   - API authentication (if applicable)
-3. **Regular updates**:
-   - Base image updates
-   - Application updates
-   - Security patches
-
-## FAQ
-
-### What are the system requirements?
-
-- **Docker**: Required for containerized deployment
-- **Memory**: 512MB RAM minimum, 1GB RAM recommended
-- **Storage**: 1GB free space for application and output
-
-### Can I run ArchLens AI without Docker?
-
-Yes, but Docker is recommended for production. For development:
-
-```bash
-cd backend
-pip install -r requirements.txt
-python -m archlens analyze /path/to/repo -o output
-```
-
-### What ports does ArchLens AI use?
-
-- **Backend API**: 8000 (configurable via docker-compose)
-- **Nginx (optional)**: 80, 443
-- **Redis (optional)**: 6379
-
-### How do I configure LLM providers?
-
-See the Configuration section above. The system supports:
-- **Mock provider**: For development and testing
-- **OpenAI provider**: For production use
-
-### What are the performance characteristics?
-
-- **Memory usage**: ~100MB for the application
-- **CPU usage**: Minimal for analysis operations
-- **Network usage**: Depends on LLM provider
-- **Storage**: Depends on repository size being analyzed
-
-### How do I scale ArchLens AI?
-
-1. **Horizontal scaling**: Multiple container instances
-2. **Load balancing**: Nginx or Kubernetes Ingress
-3. **Caching**: Redis for session data
-4. **Queueing**: Celery for long-running analyses
-
 ## License
 
 Apache 2.0
-
-## Contributing
-
-See CONTRIBUTING.md for contribution guidelines.
-
----
-
-*This README was last updated on 2026-09-13*
-
----
-
-## Resources
-
-- [Project Documentation](/documentation/)
-- [API Reference](https://docs.archlens.ai/api)
-- [Docker Hub Repository](https://hub.docker.com/r/archlens/backend)
-- [Slack Community](https://archlens.ai/slack)
-- [GitHub Issues](https://github.com/archlens-ai/ArchLens-AI/issues)

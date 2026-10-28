@@ -12,12 +12,12 @@ export const Route = createFileRoute("/analyze")({
       {
         name: "description",
         content:
-          "Upload a ZIP or paste a GitHub URL and watch ArchLens reconstruct your architecture graph, health score and AI summary.",
+          "Upload a ZIP of a Python repository and ArchLens reconstructs its architecture graph, health score and summary.",
       },
       { property: "og:title", content: "Analyze a repository — ArchLens AI" },
       {
         property: "og:description",
-        content: "Repository in, architecture map out: dependency graph, health score and AI summary.",
+        content: "Repository in, architecture map out: dependency graph, health score and summary.",
       },
     ],
   }),
@@ -30,7 +30,6 @@ function AnalyzePage() {
   const [phase, setPhase] = useState<Phase>("input");
   const [repository, setRepository] = useState("my-project");
   const [result, setResult] = useState<AnalysisResult | null>(null);
-  const [stagesDone, setStagesDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retryAfter, setRetryAfter] = useState<number | null>(null);
   const [lastRequest, setLastRequest] = useState<{
@@ -40,7 +39,6 @@ function AnalyzePage() {
   } | null>(null);
 
   const start = useCallback(async (source: string, kind: "git" | "zip", file?: File | null) => {
-    setStagesDone(false);
     setError(null);
     setRetryAfter(null);
     setLastRequest({ source, kind, file: file ?? null });
@@ -50,9 +48,10 @@ function AnalyzePage() {
       const analysis = await analyzeRepository({ source, kind, file: file ?? null });
       setRepository(analysis.summary.repository);
       setResult(analysis);
+      setPhase("result");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "That archive could not be read.");
-      setRetryAfter(e instanceof ApiError && e.status === 429 ? e.retryAfter ?? 60 : null);
+      setError(e instanceof Error ? e.message : "The analysis request failed.");
+      setRetryAfter(e instanceof ApiError && e.status === 429 ? (e.retryAfter ?? 60) : null);
       setPhase("input");
     }
   }, []);
@@ -64,13 +63,6 @@ function AnalyzePage() {
     }, 1000);
     return () => window.clearInterval(timer);
   }, [retryAfter]);
-
-  const handleStagesComplete = useCallback(() => setStagesDone(true), []);
-
-  useEffect(() => {
-    if (stagesDone && result) setPhase("result");
-  }, [stagesDone, result]);
-
 
   return (
     <section className="noise-texture relative min-h-screen pt-28 pb-24 sm:pt-36">
@@ -111,7 +103,9 @@ function AnalyzePage() {
                     <button
                       type="button"
                       disabled={retryAfter > 0}
-                      onClick={() => void start(lastRequest.source, lastRequest.kind, lastRequest.file)}
+                      onClick={() =>
+                        void start(lastRequest.source, lastRequest.kind, lastRequest.file)
+                      }
                       className="mt-3 block underline underline-offset-4 disabled:no-underline disabled:opacity-60"
                     >
                       {retryAfter > 0 ? `Retry in ${retryAfter}s` : "Retry analysis"}
@@ -122,12 +116,7 @@ function AnalyzePage() {
               <RepositoryInput onSubmit={start} />
             </>
           )}
-          {phase === "progress" && (
-            <AnalysisProgress
-              repository={repository}
-              onComplete={handleStagesComplete}
-            />
-          )}
+          {phase === "progress" && <AnalysisProgress repository={repository} />}
           {phase === "result" && result && (
             <ResultDashboard
               result={result}
