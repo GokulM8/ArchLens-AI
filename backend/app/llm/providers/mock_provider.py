@@ -1,5 +1,6 @@
 """Mock LLM Provider for testing — deterministic responses without external API."""
 
+import json
 from typing import Optional, Dict, Any
 from app.llm.provider import LLMProvider, LLMRequest, LLMResponse
 
@@ -45,6 +46,18 @@ class MockLLMProvider(LLMProvider):
             content = "Mock response: This component has the following characteristics..."
         else:
             content = f"Mock response (hash: {user_prompt_hash}): {request.user_prompt[:50]}"
+
+        if request.json_schema is not None:
+            # Structured mode: a minimal answer that satisfies CopilotAnswer.
+            content = json.dumps(
+                {
+                    "summary": content,
+                    "verified_facts": [],
+                    "interpretation": [],
+                    "recommendations": [],
+                    "insufficient_evidence": False,
+                }
+            )
 
         return LLMResponse(
             content=content,

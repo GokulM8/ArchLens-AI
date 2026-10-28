@@ -21,8 +21,10 @@ from app.llm.schemas import (
     LLMConversationContext,
 )
 from app.llm.context import VerifiedContextBuilder
-from app.llm.guardrails import GroundingGuardrails
+from app.llm.guardrails import GroundingGuardrails, ValidationResult
 from app.llm.factory import LLMProviderFactory
+from app.llm.redaction import redact
+from app.llm import structured as structured_answers
 
 
 class LLMOperation(Enum):
@@ -47,6 +49,7 @@ class LLMService:
         provider_factory: LLMProviderFactory,
         context_builder: VerifiedContextBuilder,
         guardrails: GroundingGuardrails,
+        structured_output: bool = False,
     ):
         """
         Initialize the LLM service.
@@ -55,10 +58,14 @@ class LLMService:
             provider_factory: Factory for creating LLM providers
             context_builder: Builder for verified contexts
             guardrails: Grounding and validation guardrails
+            structured_output: Require a JSON CopilotAnswer from the model and
+                validate it before reporting success.
         """
         self.provider_factory = provider_factory
         self.context_builder = context_builder
         self.guardrails = guardrails
+        self.structured_output = structured_output
+        self._facts_cache: Optional[tuple] = None
 
         # Operation handlers registry
         self._operation_handlers: Dict[LLMOperation, Callable] = {
@@ -124,7 +131,7 @@ class LLMService:
                 ),
                 explanation="LLM provider is not configured. Deterministic ArchLens analysis is still available but LLM explanations are not.",
                 suggestions=[
-                    "Set ARCHLENS_LLM_PROVIDER=openai",
+                    "Set ARCHLENS_LLM_PROVIDER (nvidia, openai or mock)",
                     "Set ARCHLENS_LLM_API_KEY=your_api_key",
                     "Set ARCHLENS_LLM_MODEL=<model name> (optional)",
                 ],
@@ -275,7 +282,7 @@ class LLMService:
                 operation_type=LLMOperationType.ASK,
                 category=LLMOperationCategory.ARCHITECTURE_UNDERSTANDING,
                 success=False,
-                content=f"Error during {operation.value}: {str(e)}",
+                content=f"Error during {operation.value}: {self._safe(e)}",
                 grounding_evidence=[],
                 metadata=LLMResponseMetadata(
                     provider=provider.provider_name,
@@ -288,8 +295,8 @@ class LLMService:
                 ),
                 error=LLMError(
                     error_type="execution_error",
-                    message=f"Error during {operation.value}: {str(e)}",
-                    details={"operation": operation.value, "error": str(e)},
+                    message=f"Error during {operation.value}: {self._safe(e)}",
+                    details={"operation": operation.value, "error": self._safe(e)},
                     retriable=True,
                 ),
                 explanation=f"An unexpected error occurred while executing {operation.value}.",
@@ -945,10 +952,10 @@ Distinguish between facts, deterministic interpretations, and LLM reasoning.
         prompt = self._build_architecture_explanation_prompt(context, request)
 
         # Generate response
-        response = await provider.generate(self._request_to_llm_request(prompt, provider_config))
+        response = await self._generate(provider, prompt, provider_config)
 
         # Apply guardrails
-        validation_result = self.guardrails.validate_repository_facts(response.content)
+        validation_result = self._check_grounding(response)
         if not validation_result.is_valid:
             return self._create_validated_response(
                 LLMOperationType.EXPLAIN,
@@ -1002,10 +1009,10 @@ Distinguish between facts, deterministic interpretations, and LLM reasoning.
         prompt = self._build_architecture_qa_prompt(context, question, request)
 
         # Generate response
-        response = await provider.generate(self._request_to_llm_request(prompt, provider_config))
+        response = await self._generate(provider, prompt, provider_config)
 
         # Apply guardrails
-        validation_result = self.guardrails.validate_repository_facts(response.content)
+        validation_result = self._check_grounding(response)
         if not validation_result.is_valid:
             return self._create_validated_response(
                 LLMOperationType.ASK,
@@ -1059,10 +1066,10 @@ Distinguish between facts, deterministic interpretations, and LLM reasoning.
         prompt = self._build_component_explanation_prompt(context, target, request)
 
         # Generate response
-        response = await provider.generate(self._request_to_llm_request(prompt, provider_config))
+        response = await self._generate(provider, prompt, provider_config)
 
         # Apply guardrails
-        validation_result = self.guardrails.validate_repository_facts(response.content)
+        validation_result = self._check_grounding(response)
         if not validation_result.is_valid:
             return self._create_validated_response(
                 LLMOperationType.EXPLAIN,
@@ -1116,10 +1123,10 @@ Distinguish between facts, deterministic interpretations, and LLM reasoning.
         prompt = self._build_dependency_explanation_prompt(context, target, request)
 
         # Generate response
-        response = await provider.generate(self._request_to_llm_request(prompt, provider_config))
+        response = await self._generate(provider, prompt, provider_config)
 
         # Apply guardrails
-        validation_result = self.guardrails.validate_repository_facts(response.content)
+        validation_result = self._check_grounding(response)
         if not validation_result.is_valid:
             return self._create_validated_response(
                 LLMOperationType.ANALYZE,
@@ -1173,10 +1180,10 @@ Distinguish between facts, deterministic interpretations, and LLM reasoning.
         prompt = self._build_risk_explanation_prompt(context, target, request)
 
         # Generate response
-        response = await provider.generate(self._request_to_llm_request(prompt, provider_config))
+        response = await self._generate(provider, prompt, provider_config)
 
         # Apply guardrails
-        validation_result = self.guardrails.validate_repository_facts(response.content)
+        validation_result = self._check_grounding(response)
         if not validation_result.is_valid:
             return self._create_validated_response(
                 LLMOperationType.VALIDATE,
@@ -1230,10 +1237,10 @@ Distinguish between facts, deterministic interpretations, and LLM reasoning.
         prompt = self._build_recommendation_explanation_prompt(context, target, request)
 
         # Generate response
-        response = await provider.generate(self._request_to_llm_request(prompt, provider_config))
+        response = await self._generate(provider, prompt, provider_config)
 
         # Apply guardrails
-        validation_result = self.guardrails.validate_repository_facts(response.content)
+        validation_result = self._check_grounding(response)
         if not validation_result.is_valid:
             return self._create_validated_response(
                 LLMOperationType.RECOMMEND,
@@ -1287,10 +1294,10 @@ Distinguish between facts, deterministic interpretations, and LLM reasoning.
         prompt = self._build_impact_reasoning_prompt(context, target, request)
 
         # Generate response
-        response = await provider.generate(self._request_to_llm_request(prompt, provider_config))
+        response = await self._generate(provider, prompt, provider_config)
 
         # Apply guardrails
-        validation_result = self.guardrails.validate_repository_facts(response.content)
+        validation_result = self._check_grounding(response)
         if not validation_result.is_valid:
             return self._create_validated_response(
                 LLMOperationType.ASK,
@@ -1344,10 +1351,10 @@ Distinguish between facts, deterministic interpretations, and LLM reasoning.
         prompt = self._build_refactoring_plan_prompt(context, target, request)
 
         # Generate response
-        response = await provider.generate(self._request_to_llm_request(prompt, provider_config))
+        response = await self._generate(provider, prompt, provider_config)
 
         # Apply guardrails
-        validation_result = self.guardrails.validate_repository_facts(response.content)
+        validation_result = self._check_grounding(response)
         if not validation_result.is_valid:
             return self._create_validated_response(
                 LLMOperationType.SUGGEST,
@@ -1391,10 +1398,10 @@ Distinguish between facts, deterministic interpretations, and LLM reasoning.
         prompt = self._build_repository_summary_prompt(context, request)
 
         # Generate response
-        response = await provider.generate(self._request_to_llm_request(prompt, provider_config))
+        response = await self._generate(provider, prompt, provider_config)
 
         # Apply guardrails
-        validation_result = self.guardrails.validate_repository_facts(response.content)
+        validation_result = self._check_grounding(response)
         if not validation_result.is_valid:
             return self._create_validated_response(
                 LLMOperationType.EXPLAIN,
@@ -1803,13 +1810,36 @@ Distinguish between facts, deterministic interpretations, and LLM reasoning.
 
     # Helper methods
 
+    def _verified_facts(self) -> tuple:
+        """(fact sheet text, citable ids), built once per service."""
+        if self._facts_cache is None:
+            builder = getattr(self.context_builder, "verified_facts", None)
+            self._facts_cache = builder() if callable(builder) else ("", set())
+        return self._facts_cache
+
+    @staticmethod
+    def _safe(error: Any) -> str:
+        """Error text with credentials removed."""
+        return redact(str(error), [os.getenv("ARCHLENS_LLM_API_KEY")])
+
     def _request_to_llm_request(self, prompt: str, provider_config: Dict[str, Any]) -> Any:
         """Convert internal request format to LLMProvider request format."""
         from app.llm.provider import LLMRequest
 
+        # Ground every request in the deterministic fact sheet, so the model
+        # never has to (or is invited to) guess repository facts.
+        facts, _ = self._verified_facts()
+        if facts:
+            prompt = f"{prompt}\n\n{facts}"
+
         # Attach prior conversation turns (spec §29) as trailing context.
         history = provider_config.get("_conversation_history") or ""
         user_prompt = f"{prompt}\n{history}" if history else prompt
+
+        json_schema = None
+        if self.structured_output:
+            user_prompt = f"{user_prompt}\n\n{structured_answers.ANSWER_INSTRUCTIONS}"
+            json_schema = structured_answers.answer_json_schema()
 
         return LLMRequest(
             system_prompt=provider_config.get("system_prompt", ""),
@@ -1817,6 +1847,90 @@ Distinguish between facts, deterministic interpretations, and LLM reasoning.
             context={},
             temperature=provider_config.get("temperature", 0.7),
             max_tokens=provider_config.get("max_tokens"),
+            json_schema=json_schema,
+        )
+
+    async def _generate(self, provider: Any, prompt: str, provider_config: Dict[str, Any]) -> Any:
+        """
+        Call the provider; in structured mode, parse and validate the answer.
+
+        A provider failure or an answer that fails validation comes back with
+        success=False and is turned into an error response, never a success.
+        """
+        response = await provider.generate(self._request_to_llm_request(prompt, provider_config))
+        if not getattr(response, "success", False) or not self.structured_output:
+            return response
+        try:
+            answer = structured_answers.parse_answer(response.content)
+        except structured_answers.StructuredOutputError as err:
+            response.success = False
+            response.error = err.message
+            response.error_type = "invalid_model_output"
+            response.retryable = True
+            response.content = ""
+            return response
+        _, known_ids = self._verified_facts()
+        response.structured = structured_answers.check_evidence(answer, known_ids)
+        response.content = structured_answers.render_answer(response.structured)
+        return response
+
+    def _check_grounding(self, response: Any) -> Any:
+        """
+        Heuristic grounding check. In structured mode cited facts are already
+        verified exactly against the fact sheet, so only the uncited prose
+        (summary, interpretation, suggestions) goes through the heuristic.
+        """
+        structured = getattr(response, "structured", None)
+        if not structured:
+            return self.guardrails.validate_repository_facts(response.content)
+        prose = "\n".join(
+            [structured["summary"], *structured["interpretation"], *structured["recommendations"]]
+        )
+        return self.guardrails.validate_repository_facts(prose)
+
+    @staticmethod
+    def _usage_model(usage: Any) -> LLMUsage:
+        if isinstance(usage, LLMUsage):
+            return usage
+        usage = usage if isinstance(usage, dict) else {}
+        return LLMUsage(
+            prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
+            completion_tokens=int(usage.get("completion_tokens", 0) or 0),
+            total_tokens=int(usage.get("total_tokens", 0) or 0),
+        )
+
+    def _create_provider_failure_response(
+        self,
+        operation_type: LLMOperationType,
+        category: LLMOperationCategory,
+        response: Any,
+        request_id: Optional[str],
+    ) -> LLMOperationResponse:
+        """The provider call (or answer validation) failed: report it, never as success."""
+        error_type = getattr(response, "error_type", None) or "provider_error"
+        message = self._safe(getattr(response, "error", None) or "The LLM provider returned no answer.")
+        return LLMOperationResponse(
+            operation_type=operation_type,
+            category=category,
+            success=False,
+            content="",
+            grounding_evidence=[],
+            metadata=LLMResponseMetadata(
+                provider=getattr(response, "provider", "none"),
+                model=getattr(response, "model", "none"),
+                usage=self._usage_model(getattr(response, "usage", None)),
+                latency_ms=getattr(response, "latency_ms", 0.0) or 0.0,
+                request_id=request_id,
+                grounding_sources=[],
+                raw_response={},
+            ),
+            error=LLMError(
+                error_type=error_type,
+                message=message,
+                retriable=bool(getattr(response, "retryable", False)),
+            ),
+            explanation=message,
+            suggestions=[],
         )
 
     def _create_success_response(
@@ -1829,10 +1943,28 @@ Distinguish between facts, deterministic interpretations, and LLM reasoning.
         request_id: Optional[str],
     ) -> LLMOperationResponse:
         """Create a successful LLM operation response."""
-        from app.llm.guardrails import GroundingGuardrails
+        if not getattr(response, "success", True):
+            return self._create_provider_failure_response(operation_type, category, response, request_id)
+        structured = getattr(response, "structured", None)
+        if structured and structured.get("unverified_evidence"):
+            return self._create_validated_response(
+                operation_type,
+                category,
+                prompt,
+                response,
+                context,
+                request_id,
+                ValidationResult(
+                    is_valid=False,
+                    message="The answer cites evidence ids that are not in the ArchLens fact sheet",
+                    evidence={"unverified_evidence": structured["unverified_evidence"]},
+                    flags=["unverified_evidence"],
+                    suggested_fix="Treat facts marked unverified as unconfirmed",
+                ),
+            )
 
         # Validate content with guardrails
-        validation_result = self.guardrails.validate_repository_facts(response.content)
+        validation_result = self._check_grounding(response)
 
         # Build grounding evidence from context
         grounding_sources = []
@@ -1853,7 +1985,7 @@ Distinguish between facts, deterministic interpretations, and LLM reasoning.
         metadata = LLMResponseMetadata(
             provider=response.provider,
             model=response.model,
-            usage=response.usage or LLMUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+            usage=self._usage_model(response.usage),
             latency_ms=response.latency_ms or 0.0,
             request_id=request_id,
             grounding_sources=grounding_sources,
@@ -1870,6 +2002,7 @@ Distinguish between facts, deterministic interpretations, and LLM reasoning.
             error=None,
             explanation=f"Successfully generated {operation_type.value} using {response.provider} provider.",
             suggestions=[],  # Will be populated based on operation
+            structured=getattr(response, "structured", None),
         )
 
     def _create_error_response(
@@ -1919,8 +2052,8 @@ Distinguish between facts, deterministic interpretations, and LLM reasoning.
         validation_result: Any,
     ) -> LLMOperationResponse:
         """Create a response with validation warnings."""
-        # Create response with content but mark as validated with warnings
-        from app.llm.guardrails import GroundingGuardrails
+        if not getattr(response, "success", True):
+            return self._create_provider_failure_response(operation_type, category, response, request_id)
 
         grounding_sources = []
         if context.architecture_data and "components" in context.architecture_data:
@@ -1939,7 +2072,7 @@ Distinguish between facts, deterministic interpretations, and LLM reasoning.
         metadata = LLMResponseMetadata(
             provider=response.provider,
             model=response.model,
-            usage=response.usage or LLMUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+            usage=self._usage_model(response.usage),
             latency_ms=response.latency_ms or 0.0,
             request_id=request_id,
             grounding_sources=grounding_sources,
@@ -1964,4 +2097,5 @@ Distinguish between facts, deterministic interpretations, and LLM reasoning.
             ),
             explanation=f"Response generated with validation warnings: {validation_result.message}",
             suggestions=suggestions,
+            structured=getattr(response, "structured", None),
         )

@@ -5,6 +5,7 @@ import time
 from typing import Optional, Dict, Any
 import httpx
 from app.llm.provider import LLMProvider, LLMRequest, LLMResponse
+from app.llm.redaction import redact
 
 
 class OpenAIProvider(LLMProvider):
@@ -78,7 +79,7 @@ class OpenAIProvider(LLMProvider):
 
         except Exception as e:
             latency_ms = (time.time() - start_time) * 1000
-            error_msg = str(e)
+            error_msg = redact(str(e), [self.api_key])
 
             return LLMResponse(
                 content="",

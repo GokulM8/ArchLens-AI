@@ -310,4 +310,6 @@ class GroundingGuardrails:
             "use", "used", "using", "also", "than", "then", "they", "there",
             "their", "would", "could", "should", "response", "question",
             "because", "your", "will", "archlens", "copilot", "based",
+            # Plain English, not identifiers ("this module", "two modules").
+            "module", "modules",
         }

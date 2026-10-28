@@ -2,7 +2,7 @@
 
 from enum import Enum
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LLMOperationType(str, Enum):
@@ -92,6 +92,30 @@ class LLMOperationResponse(BaseModel):
     error: Optional[LLMError] = None
     explanation: Optional[str] = None  # User-facing explanation
     suggestions: List[str] = Field(default_factory=list)
+    # Validated CopilotAnswer (plus per-fact verification) in structured mode.
+    structured: Optional[Dict[str, Any]] = None
+
+
+class CopilotFact(BaseModel):
+    """A repository fact restated by the model, citing fact-sheet ids."""
+    statement: str = Field(..., min_length=1)
+    evidence: List[str] = Field(..., min_length=1)
+
+
+class CopilotAnswer(BaseModel):
+    """
+    The JSON shape the model must return in structured mode.
+
+    Facts, interpretation and recommendations are kept apart so a reader can
+    tell verified findings from the model's reasoning and suggestions.
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    summary: str = Field(..., min_length=1)
+    verified_facts: List[CopilotFact] = Field(default_factory=list)
+    interpretation: List[str] = Field(default_factory=list)
+    recommendations: List[str] = Field(default_factory=list)
+    insufficient_evidence: bool = False
 
 
 class LLMMessage(BaseModel):

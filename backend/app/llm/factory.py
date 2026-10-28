@@ -5,6 +5,44 @@ from typing import Optional, Dict, Any
 from app.llm.provider import LLMProvider
 
 
+SUPPORTED_PROVIDERS = ("openai", "nvidia", "mock")
+
+_TRUE = {"1", "true", "yes", "on"}
+_FALSE = {"0", "false", "no", "off"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be an integer, got {raw!r}")
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a number, got {raw!r}")
+
+
+def _env_tristate(name: str) -> Optional[bool]:
+    """true/false from the environment; None when unset."""
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return None
+    if raw in _TRUE:
+        return True
+    if raw in _FALSE:
+        return False
+    raise ValueError(f"{name} must be true or false, got {raw!r}")
+
+
 class LLMProviderFactory:
     """Factory for creating LLM provider instances."""
 
@@ -26,6 +64,10 @@ class LLMProviderFactory:
             config = LLMProviderFactory._build_openai_config()
             return OpenAIProvider(config)
 
+        if provider_name == "nvidia":
+            from app.llm.providers.nvidia_provider import NVIDIAProvider
+            return NVIDIAProvider(LLMProviderFactory._build_nvidia_config())
+
         if provider_name == "mock":
             from app.llm.providers.mock_provider import MockLLMProvider
             config = {"model": os.getenv("ARCHLENS_LLM_MODEL", "mock-model")}
@@ -44,6 +86,29 @@ class LLMProviderFactory:
             "model": os.getenv("ARCHLENS_LLM_MODEL", ""),
             "base_url": os.getenv("ARCHLENS_LLM_BASE_URL", "https://api.openai.com/v1"),
             "timeout": int(os.getenv("ARCHLENS_LLM_TIMEOUT", "30")),
+        }
+
+    @staticmethod
+    def _build_nvidia_config() -> Dict[str, Any]:
+        """
+        Build NVIDIA provider configuration from environment variables.
+
+        Raises ValueError (surfaced as a configuration error, never a request)
+        when a value cannot be parsed.
+        """
+        from app.llm.providers.nvidia_provider import DEFAULT_BASE_URL
+
+        return {
+            "api_key": os.getenv("ARCHLENS_LLM_API_KEY", ""),
+            "model": os.getenv("ARCHLENS_LLM_MODEL", ""),
+            "base_url": os.getenv("ARCHLENS_LLM_BASE_URL") or DEFAULT_BASE_URL,
+            "timeout": _env_float("ARCHLENS_LLM_TIMEOUT", 60.0),
+            "max_tokens": _env_int("ARCHLENS_LLM_MAX_TOKENS", 2048),
+            "max_retries": _env_int("ARCHLENS_LLM_MAX_RETRIES", 2),
+            "thinking": _env_tristate("ARCHLENS_LLM_THINKING"),
+            "reasoning_effort": os.getenv("ARCHLENS_LLM_REASONING_EFFORT", "").strip().lower() or None,
+            "streaming": bool(_env_tristate("ARCHLENS_LLM_STREAMING")),
+            "response_format": os.getenv("ARCHLENS_LLM_RESPONSE_FORMAT", "none").strip().lower() or "none",
         }
 
     @staticmethod
@@ -81,7 +146,10 @@ class LLMProviderFactory:
         if not api_key:
             return "ARCHLENS_LLM_API_KEY is not set."
 
-        if provider_name not in ["openai"]:
-            return f"Unknown LLM provider: {provider_name}. Supported: openai"
+        if provider_name not in SUPPORTED_PROVIDERS:
+            return f"Unknown LLM provider: {provider_name}. Supported: {', '.join(SUPPORTED_PROVIDERS)}"
+
+        if provider_name == "nvidia" and not os.getenv("ARCHLENS_LLM_MODEL", ""):
+            return "ARCHLENS_LLM_MODEL is not set."
 
         return None
