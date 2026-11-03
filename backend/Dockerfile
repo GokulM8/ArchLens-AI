@@ -25,11 +25,14 @@ RUN adduser --disabled-password --gecos "" --uid 10001 appuser \
     && chown -R appuser:appuser /app/output
 USER appuser
 
+# Documentation only: the listening port is $PORT (default 8000).
 EXPOSE 8000
 
 # Fails (non-zero) on connection errors and on the 503 /health returns when
-# analysis storage is not writable.
+# analysis storage is not writable. Follows $PORT like the server does.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"
+    CMD python -c "import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:%s/health' % (os.environ.get('PORT') or '8000'), timeout=4).status == 200 else 1)"
 
-CMD ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
+# app.serve binds 0.0.0.0 on $PORT (Render sets it), defaulting to 8000 for
+# Docker Compose; one uvicorn worker, proxy headers trusted.
+CMD ["python", "-m", "app.serve"]

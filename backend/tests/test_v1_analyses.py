@@ -66,6 +66,11 @@ def upload(client, data: bytes, filename="repo.zip"):
     )
 
 
+def auth(created: dict) -> dict:
+    """Headers carrying the access token returned by POST /v1/analyses."""
+    return {"X-ArchLens-Token": created["accessToken"]}
+
+
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------
@@ -115,15 +120,12 @@ class TestCreateAndRead:
 
         analyses_router.get_analysis_service.cache_clear()
         fresh = TestClient(create_app())
-        got = fresh.get(f"/v1/analyses/{aid}")
+        got = fresh.get(f"/v1/analyses/{aid}", headers=auth(created))
         assert got.status_code == 200
         assert got.json()["graph"] == created["graph"]
-        assert fresh.get(f"/v1/analyses/{aid}/graph").json() == created["graph"]
-        assert fresh.get(f"/v1/analyses/{aid}/health").json() == created["health"]
-
-        items = fresh.get("/v1/analyses").json()["items"]
-        assert [i["analysisId"] for i in items] == [aid]
-        assert "graph" not in items[0]
+        assert "accessToken" not in got.json()
+        assert fresh.get(f"/v1/analyses/{aid}/graph", headers=auth(created)).json() == created["graph"]
+        assert fresh.get(f"/v1/analyses/{aid}/health", headers=auth(created)).json() == created["health"]
 
     def test_archive_without_python_is_empty_not_error(self, client):
         r = upload(client, zip_entries({"README.md": "# docs only\n"}), "docs.zip")
@@ -161,7 +163,8 @@ class TestCreateAndRead:
 
 class TestDiff:
     def test_diff_between_two_uploads(self, client, example_zip, tmp_path):
-        base = upload(client, example_zip).json()["analysisId"]
+        base_created = upload(client, example_zip).json()
+        base = base_created["analysisId"]
 
         changed = tmp_path / "changed"
         import shutil
@@ -170,9 +173,11 @@ class TestDiff:
         (changed / "app" / "services" / "cache_service.py").write_text(
             "from app.services.database import get_session\n\ndef cached():\n    return get_session\n"
         )
-        current = upload(client, zip_dir(changed, "fastapi_project-main")).json()["analysisId"]
+        current_created = upload(client, zip_dir(changed, "fastapi_project-main")).json()
+        current = current_created["analysisId"]
 
-        r = client.get(f"/v1/analyses/{current}/diff", params={"baseline": base})
+        headers = {**auth(current_created), "X-ArchLens-Baseline-Token": base_created["accessToken"]}
+        r = client.get(f"/v1/analyses/{current}/diff", params={"baseline": base}, headers=headers)
         assert r.status_code == 200, r.text
         diff = r.json()
         assert diff["versionA"]["graph"]["nodes"] and diff["versionB"]["graph"]["nodes"]
@@ -180,20 +185,23 @@ class TestDiff:
         assert any(c["label"] == "app.services.cache_service" for c in added)
 
     def test_diff_requires_baseline(self, client, example_zip):
-        aid = upload(client, example_zip).json()["analysisId"]
-        r = client.get(f"/v1/analyses/{aid}/diff")
+        created = upload(client, example_zip).json()
+        r = client.get(f"/v1/analyses/{created['analysisId']}/diff", headers=auth(created))
         assert r.status_code == 400
         assert r.json()["code"] == "missing_baseline"
 
     def test_diff_against_itself_is_rejected(self, client, example_zip):
-        aid = upload(client, example_zip).json()["analysisId"]
-        r = client.get(f"/v1/analyses/{aid}/diff", params={"baseline": aid})
+        created = upload(client, example_zip).json()
+        aid = created["analysisId"]
+        r = client.get(f"/v1/analyses/{aid}/diff", params={"baseline": aid}, headers=auth(created))
         assert r.status_code == 400
         assert r.json()["code"] == "same_analysis"
 
     def test_diff_with_unknown_baseline_is_404(self, client, example_zip):
-        aid = upload(client, example_zip).json()["analysisId"]
-        r = client.get(f"/v1/analyses/{aid}/diff", params={"baseline": "0" * 32})
+        created = upload(client, example_zip).json()
+        r = client.get(
+            f"/v1/analyses/{created['analysisId']}/diff", params={"baseline": "0" * 32}, headers=auth(created)
+        )
         assert r.status_code == 404
 
 
@@ -275,8 +283,11 @@ class TestErrors:
         assert r.status_code == 400
         assert "more than 3" in r.json()["detail"]
 
-    def test_validation_errors_use_v1_shape(self, client):
-        r = client.get("/v1/analyses", params={"limit": 0})
+    def test_validation_errors_use_v1_shape(self, client, example_zip):
+        created = upload(client, example_zip).json()
+        r = client.post(
+            f"/v1/analyses/{created['analysisId']}/copilot", json={"question": ""}, headers=auth(created)
+        )
         assert r.status_code == 422
         body = r.json()
         assert body["code"] == "validation_error" and isinstance(body["detail"], str)
@@ -292,10 +303,10 @@ class TestErrors:
         assert body["code"] == "analysis_failed" and "synthetic failure" in body["detail"]
 
         aid = body["analysisId"]
-        meta = client.get(f"/v1/analyses/{aid}").json()
+        meta = client.get(f"/v1/analyses/{aid}", headers=auth(body)).json()
         assert meta["status"] == "failed" and meta["graph"] is None
         assert meta["error"]["code"] == "analysis_failed"
-        r = client.get(f"/v1/analyses/{aid}/graph")
+        r = client.get(f"/v1/analyses/{aid}/graph", headers=auth(body))
         assert r.status_code == 409
         assert r.json()["code"] == "analysis_not_completed"
 

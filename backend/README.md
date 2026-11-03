@@ -62,9 +62,10 @@ All config is via environment variables — no hard-coded credentials or
 model names anywhere:
 
 Providers: `nvidia` (NVIDIA Nemotron via the OpenAI-compatible endpoint),
-`openai`, or `mock`. NVIDIA setup, thinking/streaming modes, structured
-answers, safeguards and the real-endpoint smoke test (`python -m app.llm.smoke`)
-are documented in [../docs/LLM.md](../docs/LLM.md).
+`openai`, or `mock`. NVIDIA setup, safeguards, what is sent to the provider,
+compatibility (thinking and streaming are not enabled yet) and the
+real-endpoint smoke test (`python -m app.llm.smoke`) are documented in
+[../docs/LLM.md](../docs/LLM.md).
 
 ```bash
 export ARCHLENS_LLM_PROVIDER=openai   # or "nvidia", or "mock" for offline use

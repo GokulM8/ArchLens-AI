@@ -176,3 +176,22 @@ def no_llm_env(monkeypatch):
     monkeypatch.delenv("ARCHLENS_LLM_API_KEY", raising=False)
     monkeypatch.delenv("ARCHLENS_LLM_MODEL", raising=False)
     yield
+
+@pytest.fixture(autouse=True)
+def fresh_llm_guard():
+    """The LLM rate limiter is process-wide; give every test its own budget."""
+    from app.analyses.safeguards import get_llm_guard
+
+    get_llm_guard.cache_clear()
+    yield
+    get_llm_guard.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def fresh_upload_guard():
+    """The upload rate limiter is process-wide too; reset it per test."""
+    from app.analyses.safeguards import get_upload_guard
+
+    get_upload_guard.cache_clear()
+    yield
+    get_upload_guard.cache_clear()

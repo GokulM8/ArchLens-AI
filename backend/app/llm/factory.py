@@ -84,8 +84,9 @@ class LLMProviderFactory:
             # (ARCHLENS_LLM_MODEL). The OpenAIProvider validates that a model is
             # present for a configured provider.
             "model": os.getenv("ARCHLENS_LLM_MODEL", ""),
-            "base_url": os.getenv("ARCHLENS_LLM_BASE_URL", "https://api.openai.com/v1"),
-            "timeout": int(os.getenv("ARCHLENS_LLM_TIMEOUT", "30")),
+            "base_url": os.getenv("ARCHLENS_LLM_BASE_URL") or "https://api.openai.com/v1",
+            "timeout": _env_float("ARCHLENS_LLM_TIMEOUT", 30.0),
+            "max_tokens": _env_int("ARCHLENS_LLM_MAX_TOKENS", 0) or None,
         }
 
     @staticmethod
@@ -105,10 +106,9 @@ class LLMProviderFactory:
             "timeout": _env_float("ARCHLENS_LLM_TIMEOUT", 60.0),
             "max_tokens": _env_int("ARCHLENS_LLM_MAX_TOKENS", 2048),
             "max_retries": _env_int("ARCHLENS_LLM_MAX_RETRIES", 2),
+            # Validated by NVIDIAProvider: only false/unset is supported for now.
             "thinking": _env_tristate("ARCHLENS_LLM_THINKING"),
-            "reasoning_effort": os.getenv("ARCHLENS_LLM_REASONING_EFFORT", "").strip().lower() or None,
             "streaming": bool(_env_tristate("ARCHLENS_LLM_STREAMING")),
-            "response_format": os.getenv("ARCHLENS_LLM_RESPONSE_FORMAT", "none").strip().lower() or "none",
         }
 
     @staticmethod

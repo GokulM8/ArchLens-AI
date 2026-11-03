@@ -6,7 +6,7 @@ ArchLens AI reconstructs a Python repository's architecture from its source code
 - **Web app.** A FastAPI `/v1/analyses` API plus a TanStack Start frontend. Upload a ZIP, then explore the inferred architecture graph, health score and summary, and diff two analyses.
 - **Optional LLM Architecture Copilot (Phase 6).** Explains and answers questions about an analysis, grounded in the artifacts: in the web UI per uploaded analysis (`/v1/analyses/{id}/copilot`), and via `/llm/*` and CLI commands. Providers: NVIDIA Nemotron, OpenAI-compatible, or an offline mock. Env-gated and never required — see [docs/LLM.md](docs/LLM.md).
 
-**The deterministic engine is the source of truth.** The web UI's graph, health, "explanation" and "summary" are generated from the artifacts with no model call. Only the separate Copilot panel uses an LLM, and its answers distinguish facts cited from the analysis (checked against it) from the model's interpretation and suggestions.
+**The deterministic engine is the source of truth.** The web UI's graph, health, "explanation" and "summary" are generated from the artifacts with no model call. Only the separate Copilot panel uses an LLM. It is given a fact sheet built from that one analysis, its answers are labelled as AI-generated, and answers the guardrails cannot match to the analysis are flagged as not fully grounded.
 
 ## What works today
 
@@ -20,12 +20,14 @@ ArchLens AI reconstructs a Python repository's architecture from its source code
 | Stored analyses survive backend restarts (files on disk / Docker volume) | ✅ |
 | Diff between two stored analyses | ✅ |
 | Docker Compose: nginx + frontend + backend, with real health checks | ✅ |
-| Optional LLM Copilot over uploaded analyses (web panel, `/v1/analyses/{id}/copilot`) | ✅ mock-tested; NVIDIA endpoint: smoke test pending an API key |
+| Optional LLM Copilot over uploaded analyses (web panel, `/v1/analyses/{id}/copilot`) | ✅ tested offline (mock provider and faked NVIDIA API); **real NVIDIA API not yet called** (pending a key) |
 | Optional LLM Copilot over CLI output (`/llm/*`, CLI `explain`/`ask`) | ✅ |
-| Per-IP rate limits, daily LLM quota, output-token ceiling | ✅ in-memory, single process |
+| Per-analysis access tokens, no listing of other visitors' uploads | ✅ ([access control](docs/API.md#access-control-no-accounts)) |
+| Retention (default 72 h) and `DELETE /v1/analyses/{id}` | ✅ |
+| Copilot per-IP rate limit, daily quota, concurrency, output-token cap | ✅ in-memory, single process |
 | Git / GitHub URL input | ❌ API returns `501 git_not_supported` |
 | Languages other than Python | ❌ |
-| Authentication, multi-user isolation, retention | ❌ |
+| User accounts | ❌ by design (no-account access tokens instead) |
 | HTTPS inside the stack | ❌ terminate TLS in front (see below) |
 
 ## Repository layout
@@ -34,7 +36,8 @@ ArchLens AI reconstructs a Python repository's architecture from its source code
 backend/    FastAPI app, deterministic pipeline, LLM copilot, tests
 frontend/   TanStack Start (React 19, Vite) web UI
 nginx/      reverse proxy config used by docker-compose
-docs/API.md /v1 request/response contract
+docs/API.md /v1 request/response contract, access tokens, retention
+docs/LLM.md optional Copilot: providers, NVIDIA setup, data handling, smoke test
 examples/   sample FastAPI project to analyse
 scripts/    clean-appledouble.sh (see "External drives" below)
 ```
@@ -75,8 +78,8 @@ bun run build && bun run start   # srvx on $PORT (default 3000)
 
 `bun run start` serves pages and assets but has **no `/api` proxy**. Use the
 Vite dev server or Docker Compose (nginx) for a working UI, or set
-`VITE_API_BASE_URL` to the backend's URL and add the frontend origin to
-`ARCHLENS_CORS_ORIGINS`.
+`VITE_API_BASE_URL` to the backend's absolute URL (build time) and add the
+frontend origin to `FRONTEND_ORIGIN` (or `ARCHLENS_CORS_ORIGINS`).
 
 ### Configuration
 
@@ -97,6 +100,13 @@ illustration.
 cd backend && python -m pytest                 # full backend suite (incl. /v1 API integration tests)
 cd frontend && bun run typecheck && bun run build
 ```
+
+## Deploying to Render (free plan)
+
+Two Docker web services (backend and frontend, no nginx) via `render.yaml`.
+See [docs/DEPLOY_RENDER.md](docs/DEPLOY_RENDER.md) for the dashboard settings,
+environment variables and the free plan's limits: storage is ephemeral, so
+uploaded analyses do not survive restarts or spin-down.
 
 ## Docker Compose
 
@@ -133,8 +143,10 @@ The stack serves plain HTTP and ships **no certificates**. For a real
 deployment, terminate TLS in front of nginx with a load balancer, an ingress,
 or a separate proxy such as Caddy or Traefik with Let's Encrypt. Publish only
 443 there, and put no keys in this repository (`*.key`/`*.pem` are
-git-ignored). Also add authentication before exposing the app: the API has
-none, and anyone who can reach it can read every stored analysis.
+git-ignored). HTTPS matters here: analysis access tokens are bearer secrets
+sent in a request header. When a proxy sits in front of nginx, configure
+`real_ip` in `nginx/nginx.conf`, or every client shares the proxy's address for
+rate limiting.
 
 ## Known limitations
 
@@ -145,18 +157,27 @@ none, and anyone who can reach it can read every stored analysis.
   `ARCHLENS_MAX_CONCURRENT_ANALYSES` (default 2), and extra requests get
   `429` with `Retry-After`. There is no progress streaming, so the UI shows an
   indeterminate progress state.
-- **Storage.** Each analysis is a directory on local disk. There is no database,
-  retention policy, access control or multi-instance sharing, so run one
-  backend replica per volume.
-- **Copilot.** Answers are not streamed to the browser. `/llm/conversations`
-  are in memory and lost on restart; the web Copilot is single-turn. Rate limits
-  are per process and reset on restart. Real NVIDIA compatibility is verified
-  only by the smoke test (`python -m app.llm.smoke`), not by `pytest`.
-- **No access control.** Analysis ids are unguessable (uuid4), but listing is on
-  by default and any id holder can read an analysis and use the Copilot on it.
-  Set `ARCHLENS_ANALYSIS_LISTING=false` publicly; it is still not authorization.
+- **Storage.** Each analysis is a directory on local disk, deleted after
+  `ARCHLENS_RETENTION_HOURS` (default 72). There is no database or
+  multi-instance sharing, so run one backend replica per volume.
+- **Access is per browser.** There are no accounts. Each analysis has an access
+  token that only the uploading browser keeps (in `localStorage`). Another
+  browser, or the same one after clearing site data, cannot open it; there is
+  no recovery and no sharing UI. Anyone who obtains a token can read that
+  analysis until it expires. Analyses stored before tokens existed are no
+  longer accessible.
+- **Copilot.** It is single-turn and not streamed. The model sees a capped
+  fact sheet (structure, metrics and risks, no source code), so it cannot
+  discuss code inside functions, and very large repositories are summarised.
+  `/llm/conversations` live in memory and are lost on restart. Rate limits and
+  quotas are per process and reset on restart. Real NVIDIA compatibility is
+  verified only by the manual smoke test (`python -m app.llm.smoke`), not by
+  `pytest`.
+- **`/llm/*` endpoints** read the CLI output folder (`ARCHLENS_ARTIFACTS_DIR`)
+  and have no access tokens. In Docker that folder holds no CLI analysis, so
+  they return `404`. Don't put a CLI analysis there on a public server.
 - **Session state in the browser** is in memory. Reopen a stored analysis via
-  `/architecture?id=<analysisId>` or the list on `/architecture`.
+  `/architecture?id=<analysisId>` or the list on `/architecture` (same browser).
 - **Large graphs.** Repositories with more than 24 components are grouped by
   package directory in the graph. The diff's mini-graphs get crowded above
   ~12 components; the change list is the precise view.
@@ -174,7 +195,7 @@ volume avoids the problem entirely.
 
 ## Architecture Copilot (optional LLM layer)
 
-The copilot explains, summarizes, and reasons over the five deterministic artifacts. It is **entirely optional and env-gated** — the deterministic pipeline above runs with no LLM configuration. **Full guide: [docs/LLM.md](docs/LLM.md)** (NVIDIA setup, thinking/streaming, structured answers, errors, data sent to the provider, quotas, smoke test).
+The copilot explains, summarizes, and reasons over the five deterministic artifacts. It is **entirely optional and env-gated** — the deterministic pipeline above runs with no LLM configuration. **Full guide: [docs/LLM.md](docs/LLM.md)** (NVIDIA setup, errors, data sent to the provider, limits, smoke test, compatibility).
 
 ### Configuration
 
@@ -190,8 +211,9 @@ ARCHLENS_LLM_THINKING=false
 ARCHLENS_LLM_STREAMING=false
 ```
 
-Check the endpoint with `cd backend && python -m app.llm.smoke` (real, quota-counted
-calls; exits `2` = pending when no key is set).
+Check the real endpoint with `cd backend && python -m app.llm.smoke`. It makes
+one real request, never prints the key, and exits `2` when the configuration
+is incomplete. `THINKING`/`STREAMING` accept only `false` for now.
 
 `is_configured()` requires both a provider name and an API key. Without them,
 all copilot operations return a clear structured error — never a traceback.
@@ -245,7 +267,8 @@ Run with FastAPI (e.g. `uvicorn app.api:app`), pointing
 | POST | `/llm/refactor-plan` | Refactoring plan |
 | POST | `/llm/summary` | Repository summary |
 | POST | `/llm/conversations` | Create a conversation |
-| POST | `/v1/analyses/{id}/copilot` | Copilot over an uploaded analysis — see [docs/API.md](docs/API.md) |
+| POST | `/v1/analyses/{id}/copilot` | Copilot over an uploaded analysis (needs its access token) — see [docs/API.md](docs/API.md) |
+| GET | `/v1/copilot/status` | Whether the Copilot is enabled, provider and model (never the key) |
 | GET | `/llm/conversations/{id}` | Read a conversation (multi-turn history) |
 
 ### How it works
@@ -263,11 +286,12 @@ Run with FastAPI (e.g. `uvicorn app.api:app`), pointing
   `execution_error` / `validation_warning`, plus provider errors such as
   `rate_limited`, `timeout`, `invalid_model_output`). A failed provider call is
   always reported as a failure, never as an empty success.
-- Every prompt carries the citable fact sheet from
-  `VerifiedContextBuilder.verified_facts()`; in structured mode (`/v1`) the
-  answer must be a `CopilotAnswer` JSON object whose citations are checked.
+- Every prompt carries the citable, size-capped fact sheet from
+  `VerifiedContextBuilder.verified_facts()`. A structured mode that checks
+  JSON answers against those ids (`LLMService(structured_output=True)`)
+  exists but is not enabled anywhere.
 
-See `../PHASE_6_REPORT.md` for the full phase report.
+See [PHASE_6_REPORT.md](PHASE_6_REPORT.md) for the full phase report.
 
 ---
 

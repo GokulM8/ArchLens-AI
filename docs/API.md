@@ -7,8 +7,9 @@ camelCase because they map 1:1 onto `frontend/src/types/architecture.ts`.
 Every response is produced by the existing deterministic pipeline
 (Phases 1–5: `analysis.json` → `graph.json` → `architecture.json` →
 `health.json` → `evolution.json`). The `/v1` layer only stores those artifacts
-and adapts them into the view models the UI renders. No LLM is called by these
-endpoints.
+and adapts them into the view models the UI renders. The only endpoint that
+calls an LLM is the optional `POST /v1/analyses/{id}/copilot` (see
+[LLM.md](LLM.md)); it never changes the stored results.
 
 ## Supported input
 
@@ -35,6 +36,8 @@ Only Python sources are analysed (the Phase 1 analyzer is Python-only).
 - `ARCHLENS_MAX_CONCURRENT_ANALYSES` (default 2) limits concurrent analyses.
   When the limit is reached, requests get a `429` response with a
   `Retry-After` header.
+- In the Compose deployment nginx also limits POSTs to the API to 20 per
+  minute per client IP (burst 10), returning `429`.
 
 ## Storage
 
@@ -49,12 +52,47 @@ output/analyses/<analysisId>/
 ```
 
 The data lives on disk, so it survives a backend restart as long as the
-directory persists (it is a mounted volume in Docker Compose). There is no
-retention policy and no authentication: anyone who can reach the API can list
-and read every stored analysis. See *Known limitations* in the README.
+directory persists (it is a mounted volume in Docker Compose). The uploaded
+archive and extracted source are deleted as soon as the analysis finishes;
+what remains are the five artifacts and `view.json`, which include short
+source excerpts (`metadata.snippet`).
 
 `analysisId` is a 32-character lowercase hex string (UUID4). Any other value
 gets `404`, and it is never used to build a path until it passes that check.
+
+## Access control (no accounts)
+
+There are no user accounts. Instead, each analysis has its own **access
+token**:
+
+- `POST /v1/analyses` returns `accessToken` (43 random URL-safe characters,
+  256 bits) **once**. The server stores only its SHA-256 hash.
+- Every other request for that analysis must send it as the
+  `X-ArchLens-Token` header. A diff also needs the baseline's token in
+  `X-ArchLens-Baseline-Token`.
+- A missing or wrong token gets the same `404 analysis_not_found` as an
+  unknown id, so ids cannot be probed. The id alone grants nothing, and one
+  analysis's token does not open another.
+- There is **no listing endpoint**; `GET /v1/analyses` is `405`. The web UI
+  keeps the ids and tokens of the analyses it uploaded in the browser's
+  `localStorage` and lists those. An analysis can therefore only be opened
+  from the browser that uploaded it (or by anyone that browser's user gives
+  the token to). Clearing site data loses access; the analysis then simply
+  expires.
+- Analyses stored before tokens were introduced have no hash and are
+  inaccessible; the retention sweep deletes them.
+
+Tokens are bearer secrets: anyone holding one can read that analysis. Serve
+the deployment over HTTPS (README, *Production TLS*) so they are not sent in
+clear text.
+
+## Retention and deletion
+
+- `ARCHLENS_RETENTION_HOURS` (default `72`; `0` keeps analyses forever).
+  Older analyses are deleted when accessed and by a sweep that runs on every
+  upload. Incomplete directories left by a crash are swept the same way.
+- `DELETE /v1/analyses/{id}` (with the token) deletes an analysis and all of
+  its artifacts immediately.
 
 ## Error format
 
@@ -71,14 +109,24 @@ Validation errors also include `"errors": [...]` (Pydantic's error list).
 | 400 | `invalid_archive` | not a ZIP, corrupt, unsafe member, too many files, too large uncompressed |
 | 400 | `missing_baseline` | diff without `baseline` |
 | 400 | `same_analysis` | diff of an analysis against itself |
-| 404 | `analysis_not_found` | unknown / malformed id |
+| 404 | `analysis_not_found` | unknown / malformed / expired id, or missing / wrong token |
 | 409 | `analysis_not_completed` | results requested for a failed analysis |
-| 413 | `upload_too_large` | upload exceeds `ARCHLENS_MAX_UPLOAD_MB` |
+| 409 | `analysis_empty` | Copilot question about an analysis with no Python modules |
+| 413 | `upload_too_large` | upload exceeds `ARCHLENS_MAX_UPLOAD_MB` (also enforced while a chunked body streams in) |
 | 415 | `unsupported_media_type` | POST that is neither multipart nor JSON |
 | 422 | `validation_error` | missing/invalid fields |
-| 422 | `analysis_failed` | the pipeline raised; body also has `analysisId` |
+| 422 | `analysis_failed` | the pipeline raised; body also has `analysisId` and `accessToken`. The message never contains server paths |
+| 422 | `analysis_timeout` | the pipeline exceeded `ARCHLENS_ANALYSIS_TIMEOUT_SECONDS`; body also has `analysisId` and `accessToken` |
+| 422 | `question_too_long` | Copilot question over `ARCHLENS_COPILOT_MAX_QUESTION_CHARS` |
 | 429 | `too_many_analyses` | concurrency limit reached (`Retry-After` header) |
+| 429 | `upload_rate_limited` / `server_upload_limit` | per-client / server-wide hourly upload limit (`Retry-After` header) |
+| 500 | `internal_error` | unexpected server error; details are only logged |
+| 429 | `llm_rate_limited` / `llm_quota_exceeded` / `llm_busy` | Copilot limits (`Retry-After` header) |
 | 501 | `git_not_supported` | `kind: "git"` |
+| 502 | `llm_provider_error` | the LLM provider rejected the call or returned a malformed or empty answer; body has `providerError` and `retryable` |
+| 503 | `llm_not_configured` | Copilot disabled or misconfigured on this server |
+| 503 | `llm_provider_busy` / `llm_provider_unavailable` | provider rate-limited, down or unreachable |
+| 504 | `llm_timeout` | provider did not answer within `ARCHLENS_LLM_TIMEOUT` |
 
 ## Endpoints
 
@@ -112,7 +160,8 @@ Git (JSON) — always `501` today:
   "graph":       ArchitectureGraphData,
   "health":      ArchitectureHealth,
   "explanation": AIExplanation | null,
-  "aiSummary":   string[]
+  "aiSummary":   string[],
+  "accessToken": "Zk3…"              // only in this response; see Access control
 }
 ```
 
@@ -122,22 +171,16 @@ always terminal. A successful analysis of an archive with no Python files is
 **not** an error: it returns `201` with `"empty": true`, empty graph nodes, and
 an `explanation` of `null`.
 
-### `GET /v1/analyses`
-
-Newest first. `?limit=` (1–200, default 50).
-
-```json
-{ "items": [ AnalysisMetadata, … ] }
-```
-
-`AnalysisMetadata` = `analysisId, status, createdAt, completedAt, repository,
-source, empty, error`. `error` is `null` or `{ "code", "message" }`.
+All endpoints below require `X-ArchLens-Token`.
 
 ### `GET /v1/analyses/{id}`
 
-Returns the same `AnalysisResponse` as `POST`. For a failed analysis it
-returns `AnalysisMetadata` with `status: "failed"` and the result fields set
-to `null`.
+Returns the same `AnalysisResponse` as `POST`, without `accessToken`. For a
+failed analysis it returns the metadata (`analysisId, status, createdAt,
+completedAt, repository, source, empty, error`) with `status: "failed"` and
+the result fields set to `null`. `error` is `null` or `{ "code", "message" }`.
+
+### `DELETE /v1/analyses/{id}` → `204`
 
 ### `GET /v1/analyses/{id}/graph` → `ArchitectureGraphData`
 ### `GET /v1/analyses/{id}/health` → `ArchitectureHealth`
@@ -146,7 +189,8 @@ to `null`.
 
 ### `GET /v1/analyses/{id}/diff?baseline={otherId}` → `ArchitectureDiffData`
 
-Compares `baseline` (version A) with `{id}` (version B) using the Phase 5
+Requires `X-ArchLens-Baseline-Token` for `baseline` as well. Compares
+`baseline` (version A) with `{id}` (version B) using the Phase 5
 `ArchitectureDiffer`. It needs two completed analyses. There is no git
 history, so "versions" are two uploads, for example two snapshots of the same
 project.
@@ -164,6 +208,53 @@ project.
 Mapping: component `added`/`removed` stay as they are; `role_changed` and
 `layer_changed` become `modified`; dependency and pattern changes become
 `added`/`removed`.
+
+### `POST /v1/analyses/{id}/copilot`
+
+Optional; needs an LLM provider configured on the server (see
+[LLM.md](LLM.md)). Single-turn: no conversation is kept.
+
+```json
+{ "question": "Which modules depend on the database layer?" }
+```
+
+**`200`**:
+
+```jsonc
+{
+  "analysisId": "3f2c…",
+  "question": "Which modules depend on the database layer?",
+  "answer": "…",                       // model output, not a deterministic finding
+  "grounded": true,                    // false: guardrails flagged claims not found in the analysis
+  "groundingWarning": null,            // the guardrail message when grounded is false
+  "provider": "nvidia",
+  "model": "nvidia/nemotron-3.5-super-vl-120b-a12b",
+  "usage": { "promptTokens": 250, "completionTokens": 180, "totalTokens": 430 },
+  "latencyMs": 2140,
+  "disclosure": "Answers are generated by an external language model …"
+}
+```
+
+The context is built only from this analysis's own stored artifacts, after
+its token has been checked. A provider failure is always an error status
+(502/503/504), never an answer. The token check, question validation and the
+`analysis_empty` / `llm_not_configured` checks happen before any rate-limit or
+quota is counted.
+
+### `GET /v1/copilot/status`
+
+No token needed. Never includes the API key or base URL.
+
+```jsonc
+{
+  "enabled": true,
+  "provider": "nvidia",                // null when unset
+  "model": "nvidia/nemotron-3.5-super-vl-120b-a12b",
+  "configurationError": null,          // e.g. "ARCHLENS_LLM_API_KEY is not set."
+  "maxQuestionChars": 2000,
+  "disclosure": "…"
+}
+```
 
 ## View-model mapping
 

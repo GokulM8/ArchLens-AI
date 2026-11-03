@@ -15,6 +15,7 @@ import type {
 } from "@/types/architecture";
 import { API_BASE, DEMO_MODE } from "@/lib/config";
 import { setRepoSession } from "@/lib/repoStore";
+import { forgetAccess, getAccessToken, listAccess, rememberAccess } from "@/lib/analysisAccess";
 
 /**
  * Service layer — the single integration seam between the UI and the ArchLens
@@ -76,7 +77,61 @@ export interface AnalysisResult {
   demo?: boolean;
 }
 
-export type AnalysisResponse = AnalysisMetadata & AnalysisResult;
+export type AnalysisResponse = AnalysisMetadata &
+  AnalysisResult & {
+    /** Returned only by the upload; required for every later read. */
+    accessToken?: string;
+  };
+
+export interface CopilotStatus {
+  enabled: boolean;
+  provider: string | null;
+  model: string | null;
+  configurationError: string | null;
+  maxQuestionChars: number;
+  disclosure: string;
+}
+
+export interface CopilotAnswer {
+  analysisId: string;
+  question: string;
+  answer: string;
+  /** false when the guardrails flagged claims they could not match to the analysis. */
+  grounded: boolean;
+  groundingWarning: string | null;
+  provider: string;
+  model: string;
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+  latencyMs: number;
+  disclosure: string;
+}
+
+const TOKEN_HEADER = "X-ArchLens-Token";
+const BASELINE_TOKEN_HEADER = "X-ArchLens-Baseline-Token";
+
+/** Headers proving access to an analysis; throws if this browser has no token for it. */
+function accessHeaders(analysisId: string): Record<string, string> {
+  const token = getAccessToken(analysisId);
+  if (!token)
+    throw new ApiError(
+      "This analysis is not available in this browser. Analyses can only be opened from the browser that uploaded them.",
+      404,
+      "analysis_not_found",
+    );
+  return { [TOKEN_HEADER]: token };
+}
+
+/** Forget the local token when the server no longer has the analysis (expired or deleted). */
+async function withAccess<T>(analysisId: string, call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404 && e.code === "analysis_not_found") {
+      forgetAccess(analysisId);
+    }
+    throw e;
+  }
+}
 
 /** The /v1 error shape: `{ detail, code }` (docs/API.md). */
 interface ErrorBody {
@@ -96,6 +151,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       "network_error",
     );
   }
+
+  if (response.status === 204) return undefined as T;
 
   let body: ErrorBody | null = null;
   try {
@@ -174,31 +231,79 @@ export async function analyzeRepository(req: AnalysisRequest): Promise<AnalysisR
   }
 
   const result = await request<AnalysisResponse>("/v1/analyses", init);
+  if (result.accessToken) {
+    rememberAccess({
+      analysisId: result.analysisId,
+      token: result.accessToken,
+      repository: result.repository,
+      filename: result.source.filename,
+      createdAt: result.createdAt,
+      empty: result.empty,
+    });
+  }
   rememberResult(result);
   return result;
 }
 
-/** Load a stored analysis (e.g. from a shared /architecture?id= link). */
+/** Load a stored analysis this browser uploaded (e.g. from /architecture?id=). */
 export async function getAnalysis(analysisId: string): Promise<AnalysisResponse> {
-  const result = await request<AnalysisResponse>(`/v1/analyses/${encodeURIComponent(analysisId)}`);
+  const result = await withAccess(analysisId, () =>
+    request<AnalysisResponse>(`/v1/analyses/${encodeURIComponent(analysisId)}`, {
+      headers: accessHeaders(analysisId),
+    }),
+  );
   if (result.status === "completed") rememberResult(result);
   return result;
 }
 
-export async function listAnalyses(limit = 50): Promise<AnalysisMetadata[]> {
+/**
+ * The analyses uploaded from this browser, newest first. The server has no
+ * listing endpoint; entries the server has since expired disappear when opened.
+ */
+export async function listAnalyses(): Promise<AnalysisMetadata[]> {
   if (DEMO_MODE) return [];
-  const body = await request<{ items: AnalysisMetadata[] }>(`/v1/analyses?limit=${limit}`);
-  return body.items;
+  return listAccess().map((a) => ({
+    analysisId: a.analysisId,
+    status: "completed",
+    createdAt: a.createdAt,
+    completedAt: a.createdAt,
+    repository: a.repository,
+    source: { kind: "zip", filename: a.filename },
+    empty: a.empty,
+    error: null,
+  }));
+}
+
+/** Permanently delete an analysis and its stored artifacts from the server. */
+export async function deleteAnalysis(analysisId: string): Promise<void> {
+  try {
+    await request<unknown>(`/v1/analyses/${encodeURIComponent(analysisId)}`, {
+      method: "DELETE",
+      headers: accessHeaders(analysisId),
+    });
+  } catch (e) {
+    // Already gone on the server: nothing left to delete.
+    if (!(e instanceof ApiError && e.status === 404)) throw e;
+  }
+  forgetAccess(analysisId);
 }
 
 export async function getArchitectureGraph(analysisId: string): Promise<ArchitectureGraphData> {
   if (DEMO_MODE) return mockGraph;
-  return request(`/v1/analyses/${encodeURIComponent(analysisId)}/graph`);
+  return withAccess(analysisId, () =>
+    request(`/v1/analyses/${encodeURIComponent(analysisId)}/graph`, {
+      headers: accessHeaders(analysisId),
+    }),
+  );
 }
 
 export async function getArchitectureHealth(analysisId: string): Promise<ArchitectureHealth> {
   if (DEMO_MODE) return mockHealth;
-  return request(`/v1/analyses/${encodeURIComponent(analysisId)}/health`);
+  return withAccess(analysisId, () =>
+    request(`/v1/analyses/${encodeURIComponent(analysisId)}/health`, {
+      headers: accessHeaders(analysisId),
+    }),
+  );
 }
 
 /** Structural diff from `baselineId` (version A) to `analysisId` (version B). */
@@ -208,7 +313,25 @@ export async function getArchitectureDiff(
 ): Promise<ArchitectureDiffData> {
   if (DEMO_MODE) return mockDiff;
   const params = new URLSearchParams({ baseline: baselineId });
-  return request(`/v1/analyses/${encodeURIComponent(analysisId)}/diff?${params}`);
+  const baselineToken = accessHeaders(baselineId)[TOKEN_HEADER] ?? "";
+  return request(`/v1/analyses/${encodeURIComponent(analysisId)}/diff?${params}`, {
+    headers: { ...accessHeaders(analysisId), [BASELINE_TOKEN_HEADER]: baselineToken },
+  });
+}
+
+export async function getCopilotStatus(): Promise<CopilotStatus> {
+  return request("/v1/copilot/status");
+}
+
+/** Ask the Architecture Copilot about one analysis (sent to the configured LLM provider). */
+export async function askCopilot(analysisId: string, question: string): Promise<CopilotAnswer> {
+  return withAccess(analysisId, () =>
+    request(`/v1/analyses/${encodeURIComponent(analysisId)}/copilot`, {
+      method: "POST",
+      headers: { ...accessHeaders(analysisId), "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    }),
+  );
 }
 
 function rememberResult(result: AnalysisResponse) {

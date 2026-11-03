@@ -31,8 +31,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.analyses import router as analyses_router
+from app.analyses.ingest import IngestLimits
 from app.analyses.safeguards import llm_guard
 from app.analyses.storage import AnalysisStore
+from app.http_middleware import BodySizeLimitMiddleware, SafeErrorMiddleware, cors_origins
 
 from app.llm.context import VerifiedContextBuilder
 from app.llm.guardrails import GroundingGuardrails
@@ -129,30 +131,55 @@ def create_app() -> FastAPI:
         version="0.1.0",
     )
 
-    # Only needed when the UI is served from a different origin than the API
-    # (the Vite proxy and the nginx deployment are same-origin).
-    cors_origins = [o.strip() for o in os.getenv("ARCHLENS_CORS_ORIGINS", "").split(",") if o.strip()]
-    if cors_origins:
+    # Middleware runs outermost-last-added: CORS wraps the error handler so
+    # even generic 500s carry CORS headers, and the body limit sits innermost.
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=_max_body_bytes)
+    app.add_middleware(SafeErrorMiddleware)
+
+    # Needed when the UI is served from a different origin than the API
+    # (Render: two services). The Vite proxy and nginx deployment are
+    # same-origin and need none. Access is by per-analysis token headers, not
+    # cookies, so credentials are never allowed.
+    origins = cors_origins()
+    if origins:
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=cors_origins,
-            allow_methods=["GET", "POST"],
-            allow_headers=["Content-Type"],
+            allow_origins=origins,
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "DELETE"],
+            allow_headers=["Content-Type", "X-ArchLens-Token", "X-ArchLens-Baseline-Token"],
+            # The UI reads Retry-After on 429s; it is not CORS-safelisted.
+            expose_headers=["Retry-After"],
+            max_age=600,
         )
 
-    @app.get("/health")
+    @app.api_route("/health", methods=["GET", "HEAD"])
     def health() -> Any:
-        """Readiness probe: 503 unless analysis storage is writable. LLM is optional."""
-        analyses_dir = AnalysisStore.from_env().base_dir
-        storage_ok = _storage_writable(analyses_dir)
+        """Readiness probe: 503 unless analysis storage is writable. LLM is optional.
+
+        Public: reports no paths, provider details or secrets.
+        """
+        storage_ok = _storage_writable(AnalysisStore.from_env().base_dir)
         body = {
             "status": "ok" if storage_ok else "unavailable",
             "storage_writable": storage_ok,
-            "analyses_dir": str(analyses_dir),
             "llm_configured": LLMProviderFactory.is_configured(),
-            "artifacts_dir": str(get_artifacts_dir()),
         }
         return JSONResponse(body, status_code=200 if storage_ok else 503)
+
+    analyses_router.install(app)
+    if _env_flag("ARCHLENS_ENABLE_LEGACY_LLM_API", True):
+        _install_legacy_llm_routes(app)
+    return app
+
+
+def _install_legacy_llm_routes(app: FastAPI) -> None:
+    """The original /llm/* endpoints over one server-wide artifacts directory.
+
+    They are not visitor-scoped (any caller reads the same artifacts and can
+    open any conversation id), so public deployments disable them with
+    ARCHLENS_ENABLE_LEGACY_LLM_API=false and use /v1/analyses/{id}/copilot.
+    """
 
     @app.get("/llm/status")
     def llm_status() -> Dict[str, Any]:
@@ -259,8 +286,17 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Conversation not found")
         return conversation
 
-    analyses_router.install(app)
-    return app
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
+def _max_body_bytes() -> int:
+    """Largest accepted request body: the upload limit plus multipart overhead."""
+    return IngestLimits.from_env().max_upload_bytes + 1024 * 1024
 
 
 def _storage_writable(path: Path) -> bool:

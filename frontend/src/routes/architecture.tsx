@@ -15,6 +15,7 @@ import {
 import { DEMO_MODE } from "@/lib/config";
 import { useRepoSession } from "@/lib/repoStore";
 import {
+  deleteAnalysis,
   getAnalysis,
   getArchitectureDiff,
   listAnalyses,
@@ -240,6 +241,23 @@ function DiffSection({
 }
 
 function AnalysisList({ analyses }: { analyses: Load<AnalysisMetadata[]> }) {
+  const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set());
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function remove(analysisId: string) {
+    setDeleting(analysisId);
+    setDeleteError(null);
+    try {
+      await deleteAnalysis(analysisId);
+      setRemoved((prev) => new Set(prev).add(analysisId));
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : "Could not delete the analysis.");
+    } finally {
+      setDeleting(null);
+    }
+  }
+
   if (analyses.state === "loading") return <Notice title="Loading analyses…" busy />;
   if (analyses.state === "error")
     return (
@@ -247,10 +265,11 @@ function AnalysisList({ analyses }: { analyses: Load<AnalysisMetadata[]> }) {
         {analyses.message}
       </Notice>
     );
-  if (analyses.data.length === 0)
+  const items = analyses.data.filter((a) => !removed.has(a.analysisId));
+  if (items.length === 0)
     return (
       <Notice title="No analyses yet">
-        Nothing has been analysed on this server.{" "}
+        This browser has no analyses yet.{" "}
         <Link to="/analyze" className="text-accent hover:underline">
           Upload a repository
         </Link>{" "}
@@ -260,12 +279,19 @@ function AnalysisList({ analyses }: { analyses: Load<AnalysisMetadata[]> }) {
 
   return (
     <>
-      <PageHeader eyebrow="Stored analyses" title="Architecture explorer">
-        Open an analysis to explore its graph and health, or compare two of them.
+      <PageHeader eyebrow="Your analyses" title="Architecture explorer">
+        Open an analysis to explore its graph and health, or compare two of them. Only analyses
+        uploaded from this browser are listed. Analyses are temporary: the server deletes them after
+        its retention period, and they can be lost earlier if the server restarts.
       </PageHeader>
       <section className="mx-auto max-w-[1400px] px-5 pb-24 sm:px-8">
+        {deleteError && (
+          <p className="mb-4 text-sm text-destructive" role="alert">
+            {deleteError}
+          </p>
+        )}
         <ul className="panel divide-y divide-border">
-          {analyses.data.map((a) => (
+          {items.map((a) => (
             <li
               key={a.analysisId}
               className="flex flex-wrap items-center justify-between gap-3 px-5 py-4"
@@ -280,13 +306,23 @@ function AnalysisList({ analyses }: { analyses: Load<AnalysisMetadata[]> }) {
                 </p>
               </div>
               {a.status === "completed" ? (
-                <Link
-                  to="/architecture"
-                  search={{ id: a.analysisId }}
-                  className="rounded-md border border-border-strong px-4 py-2 font-mono text-[0.7rem] tracking-[0.14em] text-foreground uppercase hover:border-accent/60 hover:text-accent"
-                >
-                  Open
-                </Link>
+                <div className="flex gap-2">
+                  <Link
+                    to="/architecture"
+                    search={{ id: a.analysisId }}
+                    className="rounded-md border border-border-strong px-4 py-2 font-mono text-[0.7rem] tracking-[0.14em] text-foreground uppercase hover:border-accent/60 hover:text-accent"
+                  >
+                    Open
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => void remove(a.analysisId)}
+                    disabled={deleting === a.analysisId}
+                    className="rounded-md border border-border px-4 py-2 font-mono text-[0.7rem] tracking-[0.14em] text-subtle uppercase hover:border-destructive/60 hover:text-destructive disabled:opacity-50"
+                  >
+                    {deleting === a.analysisId ? "Deleting…" : "Delete"}
+                  </button>
+                </div>
               ) : (
                 <span className="font-mono text-[0.72rem] text-destructive">
                   {a.error?.message ?? a.status}
@@ -400,7 +436,7 @@ function Notice({
 function BackToList() {
   return (
     <Link to="/architecture" search={{}} className="text-accent hover:underline">
-      Back to all analyses
+      Back to your analyses
     </Link>
   );
 }

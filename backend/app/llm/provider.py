@@ -13,6 +13,8 @@ class LLMRequest:
     context: Dict[str, Any]
     temperature: float = 0.7
     max_tokens: Optional[int] = None
+    # JSON Schema the answer must satisfy (structured mode); None = free text.
+    json_schema: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -25,6 +27,12 @@ class LLMResponse:
     latency_ms: float
     success: bool
     error: Optional[str] = None
+    # Failure classification (e.g. provider_timeout, provider_auth_error) and
+    # whether retrying the same request could succeed.
+    error_type: Optional[str] = None
+    retryable: bool = False
+    # Validated CopilotAnswer, set by the service in structured mode.
+    structured: Optional[Dict[str, Any]] = None
 
 
 class LLMProvider(ABC):

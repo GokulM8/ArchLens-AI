@@ -335,6 +335,109 @@ class VerifiedContextBuilder:
             custom_context=custom_context,
         )
 
+    # ------------------------------------------------------------------
+    # Fact sheet
+    # ------------------------------------------------------------------
+
+    # Caps keep the prompt bounded for large repositories.
+    FACT_SHEET_MAX_CHARS = 16_000
+    _FACT_LIMITS = {"components": 60, "dependencies": 80, "risks": 15, "recommendations": 15, "entries": 20, "external": 30}
+
+    def verified_facts(self) -> tuple:
+        """
+        A compact, citable summary of the deterministic artifacts.
+
+        Returns ``(text, ids)``: one ``[id] statement`` line per fact, and the
+        set of ids. Only structural metadata is included (names, paths, roles,
+        layers, metrics, risks), never source code. Lists are capped and the
+        text is cut at FACT_SHEET_MAX_CHARS, with a note saying what was left out.
+        """
+        lim = self._FACT_LIMITS
+        facts: List[tuple] = []
+
+        stats = self.raw_analysis.get("statistics") or {}
+        if stats:
+            parts = ", ".join(f"{k.replace('_', ' ')}: {v}" for k, v in stats.items() if isinstance(v, (int, float)))
+            facts.append(("repo:stats", f"Repository {self.repository_name}: {parts}"))
+
+        overall = self.raw_health.get("overall_health") or {}
+        if overall.get("score") is not None:
+            facts.append(("health:overall", f"Health score {overall['score']} ({overall.get('rating', 'unrated')}) on a 0–1 scale"))
+        for dim in overall.get("dimensions") or []:
+            issues = "; ".join(dim.get("issues") or []) or "no issues"
+            facts.append((f"health:{dim.get('name', '')}", f"{dim.get('name')} score {dim.get('score')} (weight {dim.get('weight')}): {issues}"))
+
+        for layer in self.raw_architecture.get("layers") or []:
+            members = layer.get("components") or []
+            facts.append((f"layer:{layer.get('name')}", f"Layer {layer.get('name')} has {len(members)} components"))
+
+        for pattern in self.raw_architecture.get("patterns") or []:
+            facts.append((f"pattern:{pattern.get('name')}", f"Pattern {pattern.get('name')} detected (confidence {pattern.get('confidence')})"))
+
+        components = self.raw_architecture.get("components") or []
+        for comp in components[: lim["components"]]:
+            facts.append(
+                (
+                    f"component:{comp.get('id')}",
+                    f"{comp.get('id')} ({comp.get('path')}): role {comp.get('role')}, layer {comp.get('layer')}, confidence {comp.get('confidence')}",
+                )
+            )
+        omitted = {"components": max(0, len(components) - lim["components"])}
+
+        relationships = self.raw_architecture.get("relationships") or []
+        for rel in relationships[: lim["dependencies"]]:
+            src, dst = rel.get("source_id"), rel.get("target_id")
+            facts.append((f"dependency:{src}->{dst}", f"{src} {str(rel.get('relationship_type', 'imports')).lower()} {dst}"))
+        omitted["dependencies"] = max(0, len(relationships) - lim["dependencies"])
+
+        entries = self.raw_architecture.get("entry_points") or []
+        for ep in entries[: lim["entries"]]:
+            facts.append((f"entry:{ep.get('id')}", f"Entry point {ep.get('name')} ({ep.get('entry_type')}) at {ep.get('path')}"))
+
+        severity = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        risks = sorted(self.raw_health.get("risks") or [], key=lambda r: severity.get(r.get("severity"), 4))
+        for risk in risks[: lim["risks"]]:
+            facts.append(
+                (
+                    f"risk:{risk.get('id')}",
+                    f"{risk.get('severity')} risk '{risk.get('title')}' on {', '.join(risk.get('components') or [])}: {risk.get('description')}",
+                )
+            )
+        omitted["risks"] = max(0, len(risks) - lim["risks"])
+
+        opportunities = sorted(
+            self.raw_evolution.get("refactoring_opportunities") or [], key=lambda o: severity.get(o.get("priority"), 4)
+        )
+        for opp in opportunities[: lim["recommendations"]]:
+            facts.append(
+                (
+                    f"recommendation:{opp.get('id')}",
+                    f"{opp.get('priority')} priority: {opp.get('title')} — {opp.get('suggested_action')}",
+                )
+            )
+        omitted["recommendations"] = max(0, len(opportunities) - lim["recommendations"])
+
+        for dep in (self.raw_analysis.get("dependencies") or [])[: lim["external"]]:
+            facts.append((f"external:{dep.get('name')}", f"External dependency {dep.get('name')} {dep.get('version_constraint') or ''}".rstrip()))
+
+        if not facts:
+            return "", set()
+
+        header = "ArchLens fact sheet (deterministic analysis; ids in brackets):"
+        lines, ids, size = [header], set(), len(header)
+        for fact_id, statement in facts:
+            line = f"[{fact_id}] {statement}"
+            if size + len(line) + 1 > self.FACT_SHEET_MAX_CHARS:
+                omitted["facts"] = len(facts) - len(ids)
+                break
+            lines.append(line)
+            ids.add(fact_id)
+            size += len(line) + 1
+        left_out = ", ".join(f"{n} more {k}" for k, n in omitted.items() if n)
+        if left_out:
+            lines.append(f"(Not listed for size: {left_out}.)")
+        return "\n".join(lines), ids
+
     def _summarize_risks(self, limit: int = 5) -> List[Dict[str, Any]]:
         """Return the top N risks by severity."""
         health = self._parsed_artifacts.get("health", {})

@@ -1,0 +1,101 @@
+# Render Blueprint for ArchLens AI: two free Docker web services.
+# Full walkthrough and caveats: docs/DEPLOY_RENDER.md
+#
+# Local Docker Compose (nginx + frontend + backend) is unaffected by this file.
+#
+# Values marked `sync: false` are asked for once when the Blueprint is first
+# created (Render cannot know the public URLs in advance) and are never stored
+# in this repository. After the first deploy, check that they match the URLs
+# Render assigned, then redeploy the frontend if VITE_API_BASE_URL changed
+# (it is baked in at build time).
+
+services:
+  # ---------------------------------------------------------------------------
+  # FastAPI backend
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: archlens-backend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    envVars:
+      # Exact public origin of the frontend service, e.g.
+      # https://archlens-frontend.onrender.com (no trailing slash, no path).
+      - key: FRONTEND_ORIGIN
+        sync: false
+
+      # Storage: the container filesystem is ephemeral on the free plan.
+      # Everything here is lost on restart, redeploy and spin-down.
+      - key: ARCHLENS_ANALYSES_DIR
+        value: /app/output/analyses
+      - key: ARCHLENS_RETENTION_HOURS
+        value: "2"
+      - key: ARCHLENS_MAX_STORED_ANALYSES
+        value: "25"
+
+      # Sized for 512 MB RAM / 0.1 CPU.
+      - key: ARCHLENS_MAX_UPLOAD_MB
+        value: "10"
+      - key: ARCHLENS_MAX_UNCOMPRESSED_MB
+        value: "100"
+      - key: ARCHLENS_MAX_ARCHIVE_FILES
+        value: "5000"
+      - key: ARCHLENS_MAX_CONCURRENT_ANALYSES
+        value: "1"
+      - key: ARCHLENS_ANALYSIS_TIMEOUT_SECONDS
+        value: "180"
+
+      # Abuse limits (in memory; reset on restart).
+      - key: ARCHLENS_UPLOAD_RATE_PER_HOUR
+        value: "10"
+      - key: ARCHLENS_UPLOAD_GLOBAL_PER_HOUR
+        value: "60"
+      # Render's proxy appends the client address to X-Forwarded-For; take the
+      # right-most entry instead of the client-controlled left-most one.
+      - key: ARCHLENS_TRUSTED_PROXY_HOPS
+        value: "1"
+
+      # The original /llm/* endpoints read one server-wide artifacts directory
+      # and are not visitor-scoped. Keep them off in public deployments.
+      - key: ARCHLENS_ENABLE_LEGACY_LLM_API
+        value: "false"
+
+      # Optional Architecture Copilot. Leave PROVIDER and API_KEY empty to run
+      # deterministic analysis only.
+      - key: ARCHLENS_LLM_PROVIDER
+        sync: false
+      - key: ARCHLENS_LLM_API_KEY
+        sync: false
+      - key: ARCHLENS_LLM_MODEL
+        value: nvidia/nemotron-3.5-super-vl-120b-a12b
+      - key: ARCHLENS_LLM_RATE_PER_MINUTE
+        value: "3"
+      - key: ARCHLENS_LLM_DAILY_QUOTA
+        value: "50"
+      - key: ARCHLENS_LLM_MAX_CONCURRENT
+        value: "1"
+
+  # ---------------------------------------------------------------------------
+  # TanStack Start SSR frontend
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: archlens-frontend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    healthCheckPath: /
+    envVars:
+      # Build-time (Render passes env vars to `docker build` as build args).
+      # Absolute public URL of the backend service, e.g.
+      # https://archlens-backend.onrender.com
+      - key: VITE_API_BASE_URL
+        sync: false
+      # Fail the build if VITE_API_BASE_URL is missing or relative: there is no
+      # proxy serving /api on Render.
+      - key: ARCHLENS_REQUIRE_ABSOLUTE_API_URL
+        value: "true"
+      - key: VITE_DEMO_MODE
+        value: "false"

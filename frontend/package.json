@@ -10,8 +10,9 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "start": "srvx serve --prod --dir . --entry ./dist/server/server.js --static ./dist/client --port ${PORT:-3000}",
-    "typecheck": "tsc --noEmit"
+    "start": "srvx serve --prod --dir . --host 0.0.0.0 --entry ./dist/server/server.js --static ./dist/client",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"tests/**/*.test.ts\""
   },
   "overrides": {
     "rolldown": "1.2.1"

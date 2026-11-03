@@ -220,3 +220,40 @@ class TestFromArtifactsDir:
 def ss_of(health_data) -> bool:
     """True when health_data is a {"risks": [...]} mapping (not the raw form)."""
     return isinstance(health_data, dict) and "risks" in health_data and len(health_data.get("risks", [])) >= 0
+
+class TestVerifiedFactSheet:
+    def test_facts_have_ids_and_cover_the_artifacts(self, context_builder):
+        text, ids = context_builder.verified_facts()
+        assert text.startswith("ArchLens fact sheet")
+        for fact_id in (
+            "repo:stats",
+            "health:overall",
+            "component:module:app.main",
+            "risk:high_coupling:module:app.main",
+            "recommendation:reduce_coupling:module:app.main",
+            "external:fastapi",
+        ):
+            assert fact_id in ids
+            assert f"[{fact_id}]" in text
+
+    def test_empty_artifacts_give_no_facts(self):
+        from app.llm.context import VerifiedContextBuilder
+
+        assert VerifiedContextBuilder().verified_facts() == ("", set())
+
+    def test_size_is_capped_and_omissions_are_stated(self, artifacts):
+        from app.llm.context import VerifiedContextBuilder
+
+        analysis, graph, architecture, health, evolution = artifacts
+        architecture = {
+            **architecture,
+            "components": [
+                {"id": f"module:pkg.m{i}", "path": f"pkg/m{i}.py", "role": "service", "layer": "Application", "confidence": 0.5}
+                for i in range(500)
+            ],
+        }
+        builder = VerifiedContextBuilder(analysis, graph, architecture, health, evolution)
+        text, ids = builder.verified_facts()
+        assert len(text) <= builder.FACT_SHEET_MAX_CHARS + 200
+        assert sum(1 for i in ids if i.startswith("component:")) == 60
+        assert "440 more components" in text

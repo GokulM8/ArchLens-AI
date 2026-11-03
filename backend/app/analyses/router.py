@@ -5,20 +5,27 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, FastAPI, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, Header, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.encoders import jsonable_encoder
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.analyses import copilot
 from app.analyses.errors import APIError
+from app.analyses.safeguards import client_key, get_upload_guard
 from app.analyses.service import AnalysisService
 
 router = APIRouter(prefix="/v1/analyses", tags=["analyses"])
+copilot_router = APIRouter(prefix="/v1/copilot", tags=["copilot"])
+
+# The per-analysis access token returned by POST /v1/analyses.
+TOKEN_HEADER = "X-ArchLens-Token"
+BASELINE_TOKEN_HEADER = "X-ArchLens-Baseline-Token"
 
 
 @lru_cache(maxsize=1)
@@ -27,9 +34,25 @@ def get_analysis_service() -> AnalysisService:
     return AnalysisService.from_env()
 
 
+def authorized_service(
+    analysis_id: str,
+    token: Optional[str] = Header(None, alias=TOKEN_HEADER),
+    service: AnalysisService = Depends(get_analysis_service),
+) -> AnalysisService:
+    """The service, after checking the caller holds this analysis's token (else 404)."""
+    service.store.authorize(analysis_id, token)
+    return service
+
+
 class GitAnalysisRequest(BaseModel):
     kind: str
     source: Optional[str] = None
+
+
+class CopilotRequest(BaseModel):
+    # Length is checked against ARCHLENS_COPILOT_MAX_QUESTION_CHARS in copilot.ask;
+    # this bound only stops oversized bodies early.
+    question: str = Field(..., min_length=1, max_length=20_000)
 
 
 @router.post("", status_code=201)
@@ -55,12 +78,16 @@ async def create_analysis(
         raise APIError(415, "unsupported_media_type", "Send a multipart/form-data upload with a 'file' field.")
 
     # Starlette spools the multipart body before we see it, so reject oversized
-    # requests up front when the client declares a length (nginx enforces
-    # client_max_body_size for chunked uploads in the Compose deployment).
+    # requests up front when the client declares a length. Chunked bodies are
+    # still capped by save_upload while copying (and by nginx's
+    # client_max_body_size in the Compose deployment).
     limit = service.limits.max_upload_bytes
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > limit + 64 * 1024:
         raise APIError(413, "upload_too_large", f"Upload exceeds the {limit // (1024 * 1024)} MB limit.")
+
+    # Rate limit before the body is parsed (429 + Retry-After).
+    get_upload_guard().admit(client_key(request))
 
     form = await request.form(max_files=1, max_fields=4)
     try:
@@ -79,26 +106,28 @@ async def create_analysis(
         await form.close()
 
 
-@router.get("")
-def list_analyses(
-    limit: int = Query(50, ge=1, le=200),
-    service: AnalysisService = Depends(get_analysis_service),
-) -> Dict[str, Any]:
-    return {"items": service.store.list(limit)}
+# There is deliberately no endpoint that lists analyses: visitors' uploads are
+# not enumerable. Clients keep track of the analyses (and tokens) they created.
 
 
 @router.get("/{analysis_id}")
-def get_analysis(analysis_id: str, service: AnalysisService = Depends(get_analysis_service)) -> Dict[str, Any]:
+def get_analysis(analysis_id: str, service: AnalysisService = Depends(authorized_service)) -> Dict[str, Any]:
     return service.get(analysis_id)
 
 
+@router.delete("/{analysis_id}", status_code=204)
+def delete_analysis(analysis_id: str, service: AnalysisService = Depends(authorized_service)) -> Response:
+    service.store.delete(analysis_id)
+    return Response(status_code=204)
+
+
 @router.get("/{analysis_id}/graph")
-def get_graph(analysis_id: str, service: AnalysisService = Depends(get_analysis_service)) -> Dict[str, Any]:
+def get_graph(analysis_id: str, service: AnalysisService = Depends(authorized_service)) -> Dict[str, Any]:
     return service.graph(analysis_id)
 
 
 @router.get("/{analysis_id}/health")
-def get_health(analysis_id: str, service: AnalysisService = Depends(get_analysis_service)) -> Dict[str, Any]:
+def get_health(analysis_id: str, service: AnalysisService = Depends(authorized_service)) -> Dict[str, Any]:
     return service.health(analysis_id)
 
 
@@ -106,16 +135,37 @@ def get_health(analysis_id: str, service: AnalysisService = Depends(get_analysis
 def get_diff(
     analysis_id: str,
     baseline: Optional[str] = Query(None, description="Analysis id to compare against (version A)"),
-    service: AnalysisService = Depends(get_analysis_service),
+    baseline_token: Optional[str] = Header(None, alias=BASELINE_TOKEN_HEADER),
+    service: AnalysisService = Depends(authorized_service),
 ) -> Dict[str, Any]:
     if not baseline:
         raise APIError(400, "missing_baseline", "Pass ?baseline=<analysisId> to compare two analyses.")
+    if baseline == analysis_id:
+        raise APIError(400, "same_analysis", "Choose a different analysis to compare against.")
+    # The baseline needs its own token: holding one analysis grants nothing on another.
+    service.store.authorize(baseline, baseline_token)
     return service.diff(analysis_id, baseline)
+
+
+@router.post("/{analysis_id}/copilot")
+async def ask_copilot(
+    analysis_id: str,
+    body: CopilotRequest,
+    request: Request,
+    service: AnalysisService = Depends(authorized_service),
+) -> Dict[str, Any]:
+    return await copilot.ask(service.store, analysis_id, body.question, client_key(request))
+
+
+@copilot_router.get("/status")
+def copilot_status() -> Dict[str, Any]:
+    return copilot.copilot_status()
 
 
 def install(app: FastAPI) -> None:
     """Mount the router and the /v1 error handlers on ``app``."""
     app.include_router(router)
+    app.include_router(copilot_router)
 
     @app.exception_handler(APIError)
     async def _api_error(_: Request, exc: APIError) -> JSONResponse:
